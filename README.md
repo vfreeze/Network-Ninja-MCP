@@ -13,7 +13,7 @@ playwright install chromium
 
 ## 2. Save your login
 
-The `python -m recap_mcp ...` commands below need the venv active first (`.venv\Scriptsctivate`), or write `.venv\Scripts\python -m recap_mcp ...` instead.
+The `python -m recap_mcp ...` commands below need the venv active first (`.venv\Scripts\activate`), or write `.venv\Scripts\python -m recap_mcp ...` instead.
 
 Change your Staff App password first (you are about to store it in Windows Credential Manager, so use one you don't reuse elsewhere). Then:
 
