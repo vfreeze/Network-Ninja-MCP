@@ -2,6 +2,12 @@
 
 Lets Claude (on your phone) fill in your Staff App recaps by voice. It runs on this PC and Claude reaches it through an ngrok tunnel.
 
+## Before you start
+
+- Install Python 3.13 from python.org and tick "Add python.exe to PATH" in the installer.
+- This PC must stay on and not sleep: Settings -> System -> Power -> Sleep: Never.
+- Make a free ngrok account and claim a free static domain (the free tier has usage limits).
+
 ## 1. Install
 
 ```
@@ -15,7 +21,7 @@ playwright install chromium
 
 The `python -m recap_mcp ...` commands below need the venv active first (`.venv\Scripts\activate`), or write `.venv\Scripts\python -m recap_mcp ...` instead.
 
-Change your Staff App password first (you are about to store it in Windows Credential Manager, so use one you don't reuse elsewhere). Then:
+Change your Staff App password first, in the Staff App under Your Profile -> Change Password (you are about to store it in Windows Credential Manager, so use one you don't reuse elsewhere). Then:
 
 ```
 python -m recap_mcp set-credentials --public-host <your-ngrok-domain>
@@ -42,6 +48,8 @@ Find your ngrok path with `where ngrok` (scheduled tasks may not have it on PATH
 schtasks /create /tn "RecapMCP" /sc onlogon /tr "\"C:\Users\vboym\Documents\Web Projects\automate-recaps\.venv\Scripts\python.exe\" -m recap_mcp serve --public-host <domain>"
 schtasks /create /tn "RecapNgrok" /sc onlogon /tr "\"C:\path\to\ngrok.exe\" http --url=<domain> 8765"
 ```
+
+The two tasks open console windows at logon. Leave them open: closing one stops the server or the tunnel.
 
 ## 5. Add it to Claude
 
