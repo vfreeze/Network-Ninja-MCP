@@ -1,5 +1,15 @@
-from recap_mcp.store import Store
+import base64
+import json
+import re
+import time
+from pathlib import Path
+
+import httpx2 as httpx
 import pytest
+
+from recap_mcp import site as site_mod
+from recap_mcp.site import SiteClient, SiteError
+from recap_mcp.store import Store
 
 
 def ev(i, status="needs_recap", start="2026-01-01"):
@@ -59,3 +69,89 @@ def test_draft_and_meta():
     s.meta_set("k", "v")
     s.meta_set("k", "v2")
     assert s.meta_get("k") == "v2"
+
+
+# ---- site client ----
+def make_jwt(exp, uid=42):
+    seg = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
+    return f"{seg({'alg': 'none'})}.{seg({'exp': exp, 'staffing_users_id': uid})}.sig"
+
+
+@pytest.fixture
+def kr(monkeypatch):
+    d = {("recap-mcp", "jwt"): make_jwt(time.time() + 20 * 86400)}
+    monkeypatch.setattr(site_mod.keyring, "get_password", lambda s, k: d.get((s, k)))
+    monkeypatch.setattr(site_mod.keyring, "set_password", lambda s, k, v: d.__setitem__((s, k), v))
+    monkeypatch.setattr(site_mod.time, "sleep", lambda s: None)
+    return d
+
+
+def mk(handler):
+    calls = []
+
+    def h(req):
+        calls.append(req)
+        return handler(req, len(calls))
+    return SiteClient(Store(":memory:"), httpx.Client(transport=httpx.MockTransport(h))), calls
+
+
+def test_no_submit_or_claim_endpoints_in_source():
+    src = "".join(p.read_text(encoding="utf-8") for p in Path("recap_mcp").glob("*.py"))
+    assert re.search(r"['\"/]recap_response_set['\"]", src) is None
+    assert re.search(r"['\"/][a-z_/]*claim", src) is None
+
+
+def test_uid_and_get_sends_bearer(kr):
+    c, calls = mk(lambda r, n: httpx.Response(200, json=[{"id": 1}]))
+    assert c.uid() == "42"
+    assert c.submitted() == [{"id": 1}]
+    assert calls[0].headers["authorization"].startswith("Bearer ")
+    assert "recap_response_set/staffing_user/42?shifts_days_back=90" in str(calls[0].url)
+
+
+def test_remove_refuses_foreign_ids(kr):
+    c, calls = mk(lambda r, n: httpx.Response(200, json={}))
+    pid = c.store.add_photo("1", "gallery", "x.jpg")
+    c.store.mark_uploaded(pid, "5", None)
+    with pytest.raises(SiteError):
+        c.remove_gallery_photos(["5", "999"])
+    assert calls == []
+    c.remove_gallery_photos(["5"])
+    assert json.loads(calls[0].content) == {"ids": ["5"]}
+
+
+def test_upload_retries_503_not_500(kr):
+    c, calls = mk(lambda r, n: httpx.Response(503) if n == 1 else httpx.Response(200, json={"id": 7, "uuid": "u"}))
+    assert c.upload_recap_photo("1", "9", b"jpg") == ("7", "u")
+    assert len(calls) == 2
+    c, calls = mk(lambda r, n: httpx.Response(500, json={"error": "boom"}))
+    with pytest.raises(SiteError, match="500"):
+        c.upload_gallery_photo("1", b"jpg")
+    assert len(calls) == 1
+
+
+def test_error_body_on_200_is_failure(kr):
+    c, _ = mk(lambda r, n: httpx.Response(200, json={"error": "Nope"}))
+    with pytest.raises(SiteError, match="Nope"):
+        c.save_draft({})
+
+
+def test_401_triggers_one_relogin(kr, monkeypatch):
+    logins = []
+    monkeypatch.setattr(site_mod, "login", lambda: logins.append(1) or make_jwt(time.time() + 9e6))
+    c, calls = mk(lambda r, n: httpx.Response(401) if n == 1 else httpx.Response(200, json=[]))
+    assert c.drafts() == []
+    assert len(logins) == 1
+    c, _ = mk(lambda r, n: httpx.Response(401))
+    with pytest.raises(SiteError):
+        c.drafts()
+
+
+def test_definition_cached_and_app_version(kr):
+    c, calls = mk(lambda r, n: httpx.Response(200, json={"id": 1}))
+    c.definition("1"); c.definition("1")
+    assert len(calls) == 1
+    c, _ = mk(lambda r, n: httpx.Response(200, json={"version": "6.0"}))
+    assert c.app_version() == "6.0"
+    c, _ = mk(lambda r, n: httpx.Response(200, json=[1]))
+    assert c.app_version() == "5.61.0"
