@@ -29,3 +29,15 @@ def test_trade_spend_reveals_spend_tip_receipt():
     v = visible_ids(f, {ts.instance_id: "t"})
     for lbl in ("Total Product Spend", "Tip (20%)", "itemized receipt"):
         assert find(f, lbl).instance_id in v
+
+
+def test_dangling_logic_ref_keeps_field_visible_and_reported():
+    from recap_mcp.recap import unknown_logic
+    d = {"pages": [{"items": [{"id": "s", "items": [{
+        "id": "1", "field": {"id": "9", "name": "Orphan", "defined_as": "FIELD_TEXT"},
+        "logic_groups": [{"conditions": [{"logic": "EQUALS", "value": "1",
+                                          "references_events_custom_instances_id": "999"}]}],
+    }]}]}]}
+    f = parse_definition(d)
+    assert "1" in visible_ids(f, {})
+    assert unknown_logic(f) == ["Orphan: unknown reference 999"]

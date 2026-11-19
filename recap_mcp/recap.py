@@ -84,8 +84,8 @@ def visible_ids(fields: list[Field], answers: dict[str, str]) -> set[str]:
             return memo[iid]
         memo[iid] = False  # cycle guard
         f = by_id[iid]
-        if not f.logic or any(c[1] != "EQUALS" for g in f.logic for c in g):
-            r = True  # unknown operator: never hide a possibly-required field
+        if not f.logic or any(c[1] != "EQUALS" or c[0] not in by_id for g in f.logic for c in g):
+            r = True  # unknown operator / dangling ref: never hide a possibly-required field
         else:
             r = any(
                 all(_holds(c, answers) and vis(c[0]) for c in g) for g in f.logic
@@ -97,7 +97,16 @@ def visible_ids(fields: list[Field], answers: dict[str, str]) -> set[str]:
 
 
 def unknown_logic(fields: list[Field]) -> list[str]:
-    return [f"{f.label}: {c[1]}" for f in fields for g in f.logic for c in g if c[1] != "EQUALS"]
+    ids = {f.instance_id for f in fields}
+    out = []
+    for f in fields:
+        for g in f.logic:
+            for ref, op, _ in g:
+                if op != "EQUALS":
+                    out.append(f"{f.label}: {op}")
+                if ref not in ids:
+                    out.append(f"{f.label}: unknown reference {ref}")
+    return out
 
 
 def find(fields: list[Field], label_part: str) -> Field:
