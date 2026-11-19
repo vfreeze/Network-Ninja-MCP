@@ -60,6 +60,11 @@ class Store:
                 "INSERT OR REPLACE INTO answers VALUES(?,?,?,?,?)",
                 [(events_id, k, v, int(k in estimated), now) for k, v in values.items()])
 
+    def delete_answers(self, events_id: str, instance_ids: list[str]) -> None:
+        with self.db:
+            self.db.executemany("DELETE FROM answers WHERE events_id=? AND instance_id=?",
+                                [(events_id, k) for k in instance_ids])
+
     def add_photo(self, events_id: str, slot: str, path: str) -> int:
         with self.db:
             return self.db.execute("INSERT INTO photos(events_id, slot, path) VALUES(?,?,?)",

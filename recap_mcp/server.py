@@ -223,9 +223,11 @@ def save_recap_draft(events_id: str) -> dict:
         theirs, mine, rec = answers_from_draft(existing), st.answers(eid), st.draft(eid)
         if _fp(theirs) != (rec or {}).get("fingerprint"):
             by_id = {f.instance_id: f.label for f in fields}
-            changed = [by_id.get(k, k) for k, v in theirs.items() if mine.get(k) != v]
+            diff = [k for k in theirs.keys() | mine.keys() if mine.get(k) != theirs.get(k)]
+            changed = [by_id.get(k, k) for k in diff]
             if changed:
                 st.set_answers(eid, theirs, set())
+                st.delete_answers(eid, [k for k in diff if k not in theirs])  # deleted on the site
                 return {"saved": False, "changed": changed,
                         "reason": "You edited this draft in the Staff App; I pulled your changes in."}
     for p in st.photos(eid):

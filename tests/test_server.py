@@ -346,3 +346,22 @@ def test_read_receipt(tmp_path):
     store.add_photo("1", "receipt", str(f))
     out = srv.read_receipt("1")
     assert out[0].data == b"jpg" and isinstance(out[1], str)
+
+
+def test_store_delete_answers():
+    s = Store(":memory:")
+    s.set_answers("1", {"a": "1", "b": "2"}, set())
+    s.delete_answers("1", ["a"])
+    assert s.answers("1") == {"b": "2"}
+
+
+def test_site_deletion_wins():
+    store, fs = mkt(); srv.find_recaps()
+    srv.fill_recap_fields("1", {ATT: "40", ENG: "12"})
+    old = hashlib.sha256(json.dumps(sorted({ATT: "40", ENG: "12"}.items())).encode()).hexdigest()
+    store.set_draft("1", "p1", old, None)
+    fs.drs.append(draft_for({ATT: "40"}))  # ENG deleted on the site
+    r = srv.save_recap_draft("1")
+    assert r["saved"] is False and r["changed"] == [find(F1, "Number of Consumers Engaged").label]
+    assert store.answers("1") == {ATT: "40"}
+    assert not [c for c in fs.calls if c[0] == "save_draft"]
