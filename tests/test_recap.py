@@ -1,6 +1,8 @@
 import json
 
-from recap_mcp.recap import find, parse_definition, visible_ids
+import pytest
+
+from recap_mcp.recap import AnswerError, check_rules, coerce, find, missing, parse_definition, visible_ids
 
 D = json.load(open("tests/fixtures/def1.json", encoding="utf-8"))
 
@@ -41,3 +43,48 @@ def test_dangling_logic_ref_keeps_field_visible_and_reported():
     f = parse_definition(d)
     assert "1" in visible_ids(f, {})
     assert unknown_logic(f) == ["Orphan: unknown reference 999"]
+
+
+def test_coerce_messy_voice_values():
+    f = parse_definition(D)
+    assert coerce(find(f, "Number of people in attendance"), " 40 ") == "40"
+    assert coerce(find(f, "Number of people in attendance"), "40.0") == "40"
+    assert coerce(find(f, "Total Product Spend"), "$49.5") == "49.50"
+    assert coerce(find(f, "check in with a manager"), "Yeah") == "t"
+    assert coerce(find(f, "check in with a manager"), False) == "f"
+    with pytest.raises(AnswerError):
+        coerce(find(f, "Number of people in attendance"), "about forty")
+    with pytest.raises(AnswerError):
+        coerce(find(f, "Number of people in attendance"), "-3")
+    with pytest.raises(AnswerError):
+        coerce(find(f, "Conversion Rate"), "50")
+    with pytest.raises(AnswerError):
+        coerce(find(f, "activation set up"), "x")
+    with pytest.raises(AnswerError):
+        coerce(find(f, "BA feedback - Highlights"), "  ")
+
+
+def test_multiselect_names_to_ids():
+    fld = find(parse_definition(D), "reasons why you view the event as successful")
+    assert coerce(fld, ["right account type"]) == "4287"
+    assert coerce(fld, "right account type").split("|") == ["4287"]
+    with pytest.raises(AnswerError, match="Right Account Type"):
+        coerce(fld, ["nonsense"])
+
+
+def test_engaged_must_be_less_than_attendance():
+    f = parse_definition(D)
+    a, e = find(f, "in attendance"), find(f, "Consumers Engaged")
+    assert e.instance_id in check_rules(f, {a.instance_id: "20", e.instance_id: "25"})
+    assert check_rules(f, {a.instance_id: "20", e.instance_id: "15"}) == {}
+    assert check_rules(f, {e.instance_id: "25"}) == {}
+
+
+def test_missing_splits_answers_and_uploads():
+    f = parse_definition(D)
+    m = missing(f, {})
+    assert find(f, "activation set up").instance_id in {x.instance_id for x in m["uploads"]}
+    assert find(f, "in attendance").instance_id in {x.instance_id for x in m["answers"]}
+    assert all(x.type != "FIELD_FORMULA" for x in m["answers"])
+    up = find(f, "activation set up").instance_id
+    assert up not in {x.instance_id for x in missing(f, {up: "photo"})["uploads"]}
