@@ -13,6 +13,8 @@ playwright install chromium
 
 ## 2. Save your login
 
+The `python -m recap_mcp ...` commands below need the venv active first (`.venv\Scriptsctivate`), or write `.venv\Scripts\python -m recap_mcp ...` instead.
+
 Change your Staff App password first (you are about to store it in Windows Credential Manager, so use one you don't reuse elsewhere). Then:
 
 ```
@@ -34,14 +36,12 @@ ngrok http --url=<domain> 8765
 
 ## 4. Start automatically at logon
 
-Run once in a terminal (change the paths):
+Find your ngrok path with `where ngrok` (scheduled tasks may not have it on PATH, so use the full path). Run once in a terminal, replacing the ngrok path and `<domain>`:
 
 ```
-schtasks /create /tn "RecapMCP" /sc onlogon /tr "C:\path\to\automate-recaps\.venv\Scripts\python.exe -m recap_mcp serve --public-host <domain>"
-schtasks /create /tn "RecapNgrok" /sc onlogon /tr "ngrok http --url=<domain> 8765"
+schtasks /create /tn "RecapMCP" /sc onlogon /tr "\"C:\Users\vboym\Documents\Web Projects\automate-recaps\.venv\Scripts\python.exe\" -m recap_mcp serve --public-host <domain>"
+schtasks /create /tn "RecapNgrok" /sc onlogon /tr "\"C:\path\to\ngrok.exe\" http --url=<domain> 8765"
 ```
-
-If the first can't find the project data, wrap it as `cmd /c "cd /d C:\path\to\automate-recaps && .venv\Scripts\python.exe -m recap_mcp serve --public-host <domain>"`.
 
 ## 5. Add it to Claude
 

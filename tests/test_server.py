@@ -511,3 +511,20 @@ def test_log_filter_redacts_bearer():
     rec = logging.LogRecord("x", logging.INFO, "", 0, "Authorization: Bearer abc.def", (), None)
     RedactBearer().filter(rec)
     assert rec.getMessage() == "Authorization: Bearer ***"
+
+
+def test_setup_logging_redacts_uvicorn_records(tmp_path):
+    import logging
+    from recap_mcp.__main__ import setup_logging
+    root, before = logging.getLogger(), list(logging.getLogger().handlers)
+    try:
+        setup_logging(tmp_path / "server.log")
+        logging.getLogger("uvicorn.error").error("auth Bearer x")
+        for h in root.handlers:
+            h.flush()
+        txt = (tmp_path / "server.log").read_text(encoding="utf-8")
+        assert "Bearer ***" in txt and "Bearer x" not in txt
+    finally:
+        for h in root.handlers[:]:
+            if h not in before:
+                root.removeHandler(h); h.close()

@@ -19,12 +19,22 @@ SECRET_KEY = "connector_secret"
 
 
 class RedactBearer(logging.Filter):
-    PAT = re.compile(r"Bearer\s+\S+")
+    PAT = re.compile(r"Bearer\s+\S+", re.I)
 
     def filter(self, record):
         record.msg = self.PAT.sub("Bearer ***", record.getMessage())
         record.args = ()
         return True
+
+
+def setup_logging(path) -> None:
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    root = logging.getLogger()
+    for h in (logging.FileHandler(path, encoding="utf-8"), logging.StreamHandler()):
+        h.setFormatter(fmt)
+        h.addFilter(RedactBearer())  # on the handlers that write, so every logger is covered
+        root.addHandler(h)
+    root.setLevel(logging.INFO)
 
 
 def make_app(store, site, public_host: str, secret: str):
@@ -65,13 +75,10 @@ def serve(a):
     if not secret:
         raise SystemExit("No connector secret yet. Run: python -m recap_mcp set-credentials")
     data_dir().mkdir(parents=True, exist_ok=True)
-    h = logging.FileHandler(data_dir() / "server.log", encoding="utf-8")
-    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-    h.addFilter(RedactBearer())
-    logging.getLogger().addHandler(h)
-    logging.getLogger().setLevel(logging.INFO)
+    setup_logging(data_dir() / "server.log")
     store = _store()
-    uvicorn.run(make_app(store, SiteClient(store), a.public_host, secret), host="127.0.0.1", port=a.port)
+    uvicorn.run(make_app(store, SiteClient(store), a.public_host, secret), host="127.0.0.1", port=a.port,
+                log_config=None, access_log=False)  # access log would print the secret path
 
 
 def main(argv=None):
