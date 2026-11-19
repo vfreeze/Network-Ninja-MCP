@@ -6,6 +6,7 @@ import time
 
 import httpx2 as httpx  # the httpx build that ships with mcp 2.x
 import keyring
+from playwright.sync_api import sync_playwright
 
 from .store import Store
 
@@ -28,24 +29,26 @@ def _claims(token: str) -> dict:
 
 def login() -> str:
     """Headless SAML login (spec 4.1). Needs the live site; not unit-tested."""
-    from playwright.sync_api import sync_playwright
     user, pw = keyring.get_password(SVC, "username"), keyring.get_password(SVC, "password")
     if not user or not pw:
         raise SiteError("No saved Staff App credentials; run the credential setup first.")
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        try:
-            page = browser.new_page()
-            with page.expect_response(lambda r: r.url.endswith("/auth/login-saml"), timeout=90000) as got:
-                page.goto("https://staff.betprogram.networkninja.com/")
-                page.fill("#username", user)
-                page.click("text=Log In")
-                page.wait_for_selector("input[type=password]")
-                page.fill("input[type=password]", pw)
-                page.keyboard.press("Enter")
-            token = got.value.json().get("token")
-        finally:
-            browser.close()
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                with page.expect_response(lambda r: r.url.endswith("/auth/login-saml"), timeout=90000) as got:
+                    page.goto("https://staff.betprogram.networkninja.com/")
+                    page.fill("#username", user)
+                    page.click("text=Log In")
+                    page.wait_for_selector("input[type=password]")
+                    page.fill("input[type=password]", pw)
+                    page.keyboard.press("Enter")
+                token = got.value.json().get("token")
+            finally:
+                browser.close()
+    except Exception as e:  # Playwright call logs can echo the filled password: keep only the type
+        raise SiteError(f"Staff App login failed ({type(e).__name__}); check the saved credentials.") from None
     if not token:
         raise SiteError("Staff App login did not return a token (wrong password?).")
     keyring.set_password(SVC, "jwt", token)
@@ -91,10 +94,12 @@ class SiteClient:
                 if r.status_code >= 400 or err:
                     raise SiteError(f"Staff App error (HTTP {r.status_code}): {err or r.text[:200]}")
                 return body
-            except httpx.TransportError as e:
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as e:
                 if not retry or attempt == 2:
                     raise SiteError(f"Could not reach the Staff App: {e}") from e
                 time.sleep(1 << attempt)
+            except httpx.TransportError as e:  # e.g. ReadTimeout: the file may be stored, never retry
+                raise SiteError(f"Staff App connection failed ({type(e).__name__}).") from e
 
     @staticmethod
     def _body(r):

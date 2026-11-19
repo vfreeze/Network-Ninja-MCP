@@ -155,3 +155,54 @@ def test_definition_cached_and_app_version(kr):
     assert c.app_version() == "6.0"
     c, _ = mk(lambda r, n: httpx.Response(200, json=[1]))
     assert c.app_version() == "5.61.0"
+
+
+def test_read_timeout_not_retried(kr):
+    def boom(r, n):
+        raise httpx.ReadTimeout("slow")
+    c, calls = mk(boom)
+    with pytest.raises(SiteError):
+        c.upload_gallery_photo("1", b"jpg")
+    assert len(calls) == 1
+
+
+def test_connect_error_retried(kr):
+    def h(r, n):
+        if n == 1:
+            raise httpx.ConnectError("down")
+        return httpx.Response(200, json={"id": 3})
+    c, calls = mk(h)
+    assert c.upload_gallery_photo("1", b"jpg") == "3"
+    assert len(calls) == 2
+
+
+def test_login_failure_hides_password(kr, monkeypatch):
+    kr[("recap-mcp", "username")] = "bob"
+    kr[("recap-mcp", "password")] = "s3cretPW"
+
+    class Page:
+        def __getattr__(self, n):
+            def f(*a, **k):
+                if n == "fill" and a[0].startswith("input[type"):
+                    raise RuntimeError('fill("s3cretPW") timed out')
+            return f
+
+        def expect_response(self, *a, **k):
+            import contextlib
+            return contextlib.nullcontext(type("G", (), {"value": None})())
+
+    class B:
+        def new_page(self): return Page()
+        def close(self): pass
+
+    class PW:
+        chromium = type("C", (), {"launch": staticmethod(lambda **k: B())})()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(site_mod, "sync_playwright", lambda: PW())
+    with pytest.raises(SiteError) as ei:
+        site_mod.login()
+    e = ei.value
+    assert "s3cretPW" not in str(e)
+    assert e.__cause__ is None and e.__suppress_context__  # `from None`
