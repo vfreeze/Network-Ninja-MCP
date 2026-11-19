@@ -206,3 +206,143 @@ def test_login_failure_hides_password(kr, monkeypatch):
     e = ei.value
     assert "s3cretPW" not in str(e)
     assert e.__cause__ is None and e.__suppress_context__  # `from None`
+
+
+# ---------------- MCP tools (Task 7) ----------------
+import hashlib  # noqa: E402
+from datetime import datetime  # noqa: E402
+
+from recap_mcp import server as srv  # noqa: E402
+from recap_mcp.recap import PHOENIX, answers_from_draft, find, parse_definition  # noqa: E402
+
+DEF1 = json.load(open("tests/fixtures/def1.json", encoding="utf-8"))
+F1 = parse_definition(DEF1)
+ATT = find(F1, "Number of people in attendance").instance_id
+ENG = find(F1, "Number of Consumers Engaged").instance_id
+
+
+class FakeSite:
+    def __init__(self):
+        self.calls = []
+        self.pos, self.evs, self.subs, self.drs = [], [], [], []
+        self.fail_save = False
+
+    def uid(self): return "7"
+    def positions(self): return self.pos
+    def events(self): return self.evs
+    def submitted(self): return self.subs
+    def drafts(self): return self.drs
+    def definition(self, rid): return DEF1
+    def app_version(self): return "5.61.0"
+
+    def upload_recap_photo(self, events_id, field_id, jpeg):
+        self.calls.append(("upload_recap_photo", field_id))
+        return f"d{len(self.calls)}", f"u{len(self.calls)}"
+
+    def upload_gallery_photo(self, events_id, jpeg):
+        self.calls.append(("upload_gallery_photo", events_id))
+        return f"g{len(self.calls)}"
+
+    def save_draft(self, payload):
+        self.calls.append(("save_draft", payload))
+        if self.fail_save:
+            self.fail_save = False
+            raise SiteError("boom")
+        return {"id": "p1"}
+
+
+def mkt(tmp_path=None, shifts=(("1", "Red Zone", "2026-11-10 18:00:00"),)):
+    store, fs = Store(":memory:"), FakeSite()
+    for i, name, start in shifts:
+        fs.pos.append({"events_id": i, "recap_on_portal": "t"})
+        fs.evs.append({"id": i, "venue_name": name, "start_timestamp": start, "end_timestamp": start,
+                       "events_recaps_id": "1", "street_address1": "1 Main", "city": "Mesa",
+                       "scheduling_fields": [{"name": "Brand Family", "print_value": "Bud Light"}]})
+    srv.build_server(store, fs, "https://x.test")
+    return store, fs
+
+
+def test_find_recaps_lists_pending_and_disambiguates():
+    store, fs = mkt(shifts=(("1", "Red Zone", "2026-11-10 18:00:00"), ("2", "Red Zone", "2026-11-12 20:00:00")))
+    r = srv.find_recaps(bar_name="red zone")
+    assert {x["events_id"] for x in r["shifts"]} == {"1", "2"}
+    assert r["shifts"][0]["date"] == "2026-11-12" and r["shifts"][0]["start_time"] == "20:00"
+    assert "ask_user" in r
+    fs.subs.append({"events_id": "1"})
+    store.meta_set("last_refresh", "0")
+    assert [x["events_id"] for x in srv.find_recaps()["shifts"]] == ["2"]
+
+
+def test_fill_reports_rejected_and_missing():
+    mkt(); srv.find_recaps()
+    r = srv.fill_recap_fields("1", {ATT: "forty", ENG: "12"}, estimated=[ENG])
+    assert r["saved"] == [ENG] and ATT in r["rejected"]
+    assert ENG not in r["still_missing"]["answers"] and ATT in r["still_missing"]["answers"]
+    assert srv.fill_recap_fields("9", {})["error"].startswith("Unknown shift id")
+
+
+def test_save_draft_is_idempotent_for_photos(tmp_path):
+    store, fs = mkt(); srv.find_recaps()
+    srv.fill_recap_fields("1", {ATT: "40"})
+    f = tmp_path / "a.jpg"; f.write_bytes(b"jpg")
+    store.add_photo("1", "setup", str(f)); store.add_photo("1", "crowd", str(f))
+    fs.fail_save = True
+    assert "error" in srv.save_recap_draft("1")
+    n = [c[0] for c in fs.calls].count("upload_recap_photo") + [c[0] for c in fs.calls].count("upload_gallery_photo")
+    r = srv.save_recap_draft("1")
+    assert r["saved"] is True and "Staff App" in r["message"]
+    n2 = [c[0] for c in fs.calls if c[0].startswith("upload")]
+    assert len(n2) == n == 2
+    payload = [c[1] for c in fs.calls if c[0] == "save_draft"][-1]
+    setup = find(F1, "activation set up").instance_id
+    frs = [fr for fo in payload["form_responses"] for fr in fo["field_responses"]]
+    assert any(fr["events_custom_instances_id"] == setup and fr["value"] for fr in frs)
+
+
+def draft_for(answers):
+    return {"id": "p1", "events_id": "1", "form_responses": [{"field_responses": [
+        {"events_custom_instances_id": k, "value": v, "document_uuids": []} for k, v in answers.items()]}]}
+
+
+def test_site_edits_win():
+    store, fs = mkt(); srv.find_recaps()
+    srv.fill_recap_fields("1", {ATT: "40"})
+    old = hashlib.sha256(json.dumps(sorted({ATT: "40"}.items())).encode()).hexdigest()
+    store.set_draft("1", "p1", old, None)
+    fs.drs.append(draft_for({ATT: "55"}))
+    r = srv.save_recap_draft("1")
+    assert r["saved"] is False and r["changed"] == [find(F1, "Number of people in attendance").label]
+    assert store.answers("1")[ATT] == "55"
+    assert not [c for c in fs.calls if c[0] == "save_draft"]
+
+
+def test_site_draft_imported_when_no_local_answers():
+    store, fs = mkt(); srv.find_recaps()
+    fs.drs.append(draft_for({ATT: "33"}))
+    r = srv.get_recap_fields("1")
+    assert store.answers("1") == {ATT: "33"}
+    assert next(f for f in r["fields"] if f["id"] == ATT)["value"] == "33"
+
+
+def test_save_never_calls_submit():
+    store, fs = mkt(); srv.find_recaps()
+    srv.fill_recap_fields("1", {ATT: "40"})
+    assert srv.save_recap_draft("1")["saved"] is True
+    assert {c[0] for c in fs.calls} == {"save_draft"}
+    assert not hasattr(fs, "submit")
+
+
+def test_upload_link_and_slots():
+    store, fs = mkt(); srv.find_recaps()
+    r = srv.create_photo_upload_link("1")
+    assert r["url"].startswith("https://x.test/upload/") and r["unmapped"] == []
+    assert r["slots"]["crowd"] == "event photo gallery" and "set up" in r["slots"]["setup"].lower()
+
+
+def test_read_receipt(tmp_path):
+    store, fs = mkt(); srv.find_recaps()
+    assert "create_photo_upload_link" in srv.read_receipt("1")["error"]
+    f = tmp_path / "r.jpg"; f.write_bytes(b"jpg")
+    store.add_photo("1", "receipt", str(f))
+    out = srv.read_receipt("1")
+    assert out[0].data == b"jpg" and isinstance(out[1], str)
