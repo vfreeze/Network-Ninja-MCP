@@ -300,14 +300,14 @@ def test_save_draft_is_idempotent_for_photos(tmp_path):
 
 
 def draft_for(answers):
-    return {"id": "p1", "events_id": "1", "form_responses": [{"field_responses": [
+    return {"id": "p1", "events_id": "1", "form_responses": [{"id": "f1", "events_custom_forms_id": "x", "field_responses": [
         {"events_custom_instances_id": k, "value": v, "document_uuids": []} for k, v in answers.items()]}]}
 
 
 def test_site_edits_win():
     store, fs = mkt(); srv.find_recaps()
     srv.fill_recap_fields("1", {ATT: "40"})
-    old = hashlib.sha256(json.dumps(sorted({ATT: "40"}.items())).encode()).hexdigest()
+    old = json.dumps({ATT: "40"}, sort_keys=True)
     store.set_draft("1", "p1", old, None)
     fs.drs.append(draft_for({ATT: "55"}))
     r = srv.save_recap_draft("1")
@@ -355,13 +355,45 @@ def test_store_delete_answers():
     assert s.answers("1") == {"b": "2"}
 
 
-def test_site_deletion_wins():
+def _saved_ab():
     store, fs = mkt(); srv.find_recaps()
     srv.fill_recap_fields("1", {ATT: "40", ENG: "12"})
-    old = hashlib.sha256(json.dumps(sorted({ATT: "40", ENG: "12"}.items())).encode()).hexdigest()
-    store.set_draft("1", "p1", old, None)
-    fs.drs.append(draft_for({ATT: "40"}))  # ENG deleted on the site
+    store.set_draft("1", "p1", json.dumps({ATT: "40", ENG: "12"}, sort_keys=True), None)
+    return store, fs
+
+
+def _no_save(fs):
+    return not [c for c in fs.calls if c[0] == "save_draft"]
+
+
+def test_site_deletion_wins():  # (a)
+    store, fs = _saved_ab()
+    fs.drs.append(draft_for({ATT: "40"}))
     r = srv.save_recap_draft("1")
     assert r["saved"] is False and r["changed"] == [find(F1, "Number of Consumers Engaged").label]
-    assert store.answers("1") == {ATT: "40"}
-    assert not [c for c in fs.calls if c[0] == "save_draft"]
+    assert store.answers("1") == {ATT: "40"} and _no_save(fs)
+
+
+def test_local_addition_kept_when_site_unchanged():  # (b)
+    store, fs = _saved_ab()
+    srv.fill_recap_fields("1", {find(F1, "Number of Consumers Sampled").instance_id: "5"})
+    fs.drs.append(draft_for({ATT: "40", ENG: "12"}))
+    assert srv.save_recap_draft("1")["saved"] is True
+    assert len(store.answers("1")) == 3
+
+
+def test_site_edit_and_local_addition():  # (c)
+    store, fs = _saved_ab()
+    c = find(F1, "Number of Consumers Sampled").instance_id
+    srv.fill_recap_fields("1", {c: "5"})
+    fs.drs.append(draft_for({ATT: "55", ENG: "12"}))
+    r = srv.save_recap_draft("1")
+    assert r["saved"] is False and store.answers("1") == {ATT: "55", ENG: "12", c: "5"} and _no_save(fs)
+
+
+def test_no_previous_save_keeps_local_only_keys():  # (d)
+    store, fs = mkt(); srv.find_recaps()
+    srv.fill_recap_fields("1", {ATT: "41", ENG: "12"})
+    fs.drs.append(draft_for({ATT: "40"}))
+    r = srv.save_recap_draft("1")
+    assert r["saved"] is False and store.answers("1") == {ATT: "40", ENG: "12"} and _no_save(fs)

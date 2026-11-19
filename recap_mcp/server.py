@@ -1,6 +1,5 @@
 """MCP tools (spec 5.4). Sync defs: the SDK runs them in a worker thread, so blocking I/O is fine."""
 import functools
-import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -44,8 +43,8 @@ def _now() -> datetime:
     return datetime.now(PHOENIX)
 
 
-def _fp(answers: dict) -> str:
-    return hashlib.sha256(json.dumps(sorted(answers.items())).encode()).hexdigest()
+def _fp(answers: dict) -> str:  # the answers we last sent (kept in drafts.fingerprint)
+    return json.dumps(answers, sort_keys=True)
 
 
 def _site_draft(events_id: str) -> dict | None:
@@ -219,17 +218,16 @@ def save_recap_draft(events_id: str) -> dict:
     if st.event(eid)["site_status"] not in ("needs_recap", "draft_saved"):
         return {"saved": False, "reason": "This shift no longer needs a recap (submitted or locked)."}
     existing = _site_draft(eid)
-    if existing:
-        theirs, mine, rec = answers_from_draft(existing), st.answers(eid), st.draft(eid)
-        if _fp(theirs) != (rec or {}).get("fingerprint"):
+    if existing:  # 3-way: compare site draft with what we last sent; local-only keys are never touched
+        site_a = answers_from_draft(existing)
+        sent = json.loads((st.draft(eid) or {}).get("fingerprint") or "{}")
+        diff = [k for k in site_a.keys() | sent.keys() if site_a.get(k) != sent.get(k)]
+        if diff:
             by_id = {f.instance_id: f.label for f in fields}
-            diff = [k for k in theirs.keys() | mine.keys() if mine.get(k) != theirs.get(k)]
-            changed = [by_id.get(k, k) for k in diff]
-            if changed:
-                st.set_answers(eid, theirs, set())
-                st.delete_answers(eid, [k for k in diff if k not in theirs])  # deleted on the site
-                return {"saved": False, "changed": changed,
-                        "reason": "You edited this draft in the Staff App; I pulled your changes in."}
+            st.set_answers(eid, {k: site_a[k] for k in diff if k in site_a}, set())
+            st.delete_answers(eid, [k for k in diff if k not in site_a])  # deleted on the site
+            return {"saved": False, "changed": [by_id.get(k, k) for k in diff],
+                    "reason": "You edited this draft in the Staff App; I pulled your changes in."}
     for p in st.photos(eid):
         if p["site_document_id"]:
             continue
