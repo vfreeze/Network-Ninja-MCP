@@ -1,8 +1,11 @@
 import json
+from datetime import datetime
 
 import pytest
 
-from recap_mcp.recap import AnswerError, check_rules, coerce, find, missing, parse_definition, visible_ids
+from recap_mcp.recap import (AnswerError, brand_of, check_rules, coerce, find, match_events, missing,
+                             needs_recap, parse_definition, visible_ids)
+from recap_mcp.recap import PHOENIX
 
 D = json.load(open("tests/fixtures/def1.json", encoding="utf-8"))
 
@@ -96,3 +99,38 @@ def test_coerce_rejects_non_finite_numbers():
         for bad in ("nan", "inf", "-inf"):
             with pytest.raises(AnswerError):
                 coerce(fld, bad)
+
+
+NOW = datetime(2026, 11, 22, 18, 0, tzinfo=PHOENIX)
+EV = {"id": "1", "start_timestamp": "2026-11-22 12:30:00", "events_recaps_id": "1", "recaps_locked": "f",
+      "events_statuses_definition": "STATUS_STAFFED"}
+
+
+def test_needs_recap_rule():
+    pos = {"recap_on_portal": "t"}
+    assert needs_recap(pos, EV, set(), NOW)
+    assert not needs_recap({"recap_on_portal": "f"}, EV, set(), NOW)
+    assert not needs_recap(pos, EV, {"1"}, NOW)
+    assert not needs_recap(pos, {**EV, "events_recaps_id": "4"}, set(), NOW)
+    assert not needs_recap(pos, {**EV, "start_timestamp": "2026-11-29 12:30:00"}, set(), NOW)
+    assert not needs_recap(pos, {**EV, "recaps_locked": "t"}, set(), NOW)
+    assert not needs_recap(pos, {**EV, "events_recaps_id": ""}, set(), NOW)
+    assert not needs_recap(pos, {**EV, "events_statuses_definition": "STATUS_CANCELLED"}, set(), NOW)
+
+
+def test_brand_of():
+    assert brand_of({"scheduling_fields": [{"name": "Brand Family", "print_value": "Bud Light"}]}) == "Bud Light"
+    assert brand_of({"scheduling_fields": []}) is None
+
+
+def test_match_normalises_names():
+    rows = [{"venue_name": "ERNIE S INN", "start_ts": "2026-11-13 19:30:00"},
+            {"venue_name": "Tacos & Craft", "start_ts": "2026-11-21 17:30:00"},
+            {"venue_name": "Red Zone Sports Grill", "start_ts": "2026-11-15 12:30:00"},
+            {"venue_name": "Red Zone Sports Grill", "start_ts": "2026-11-22 15:00:00"}]
+    assert [r["venue_name"] for r in match_events(rows, "ernies inn", None, None)] == ["ERNIE S INN"]
+    assert match_events(rows, "tacos and craft", None, None)[0]["venue_name"] == "Tacos & Craft"
+    assert len(match_events(rows, "red zone", None, None)) == 2
+    assert len(match_events(rows, "red zone", None, "15:00")) == 1
+    assert len(match_events(rows, None, "2026-11-22", None)) == 1
+    assert match_events(rows, "red zone", None, None)[0]["start_ts"] == "2026-11-22 15:00:00"

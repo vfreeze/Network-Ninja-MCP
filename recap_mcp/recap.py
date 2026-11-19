@@ -1,6 +1,9 @@
 """Pure logic: parse a recap definition and decide which fields are visible."""
+import difflib
 import math
+import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 
 @dataclass
@@ -207,3 +210,50 @@ def missing(fields: list[Field], answers: dict[str, str]) -> dict[str, list[Fiel
         if f.instance_id in vis and f.required and f.type != "FIELD_FORMULA" and not answers.get(f.instance_id):
             out["uploads" if f.type == "FIELD_IMAGE_UPLOAD" else "answers"].append(f)
     return out
+
+
+PHOENIX = timezone(timedelta(hours=-7), "MST")  # Arizona has no DST; site timestamps are naive local
+
+
+def needs_recap(position: dict, event: dict, submitted_event_ids: set[str], now: datetime) -> bool:
+    start = datetime.strptime(event["start_timestamp"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=PHOENIX)
+    rid = event.get("events_recaps_id")
+    return bool(
+        start < now.astimezone(PHOENIX)
+        and position.get("recap_on_portal") == "t"
+        and rid and rid != "4"
+        and event.get("recaps_locked") != "t"
+        and "CANCEL" not in (event.get("events_statuses_definition") or "")
+        and event["id"] not in submitted_event_ids
+    )
+
+
+def brand_of(event: dict) -> str | None:
+    for f in event.get("scheduling_fields", []):
+        if f.get("name") == "Brand Family":
+            return f.get("print_value")
+    return None
+
+
+def normalise_name(s: str) -> str:
+    s = re.sub(r"[^a-z0-9 ]", "", s.lower().replace("&", " and ").replace("'", ""))
+    return " ".join(s.split())
+
+
+def match_events(rows: list[dict], bar_name: str | None, date: str | None, time: str | None) -> list[dict]:
+    q = normalise_name(bar_name) if bar_name else None
+    out = []
+    for r in rows:
+        if q:
+            v = normalise_name(r["venue_name"])
+            if q not in v and difflib.SequenceMatcher(None, q, v).ratio() < 0.6:
+                continue
+        if date and not r["start_ts"].startswith(date):
+            continue
+        if time:
+            start = datetime.strptime(r["start_ts"], "%Y-%m-%d %H:%M:%S")
+            want = datetime.strptime(f"{start:%Y-%m-%d} {time}", "%Y-%m-%d %H:%M")
+            if abs(start - want) > timedelta(minutes=60):
+                continue
+        out.append(r)
+    return sorted(out, key=lambda r: r["start_ts"], reverse=True)
