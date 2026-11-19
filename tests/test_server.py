@@ -484,3 +484,30 @@ def test_photo_id_scoped_to_token_event(monkeypatch, tmp_path):
     assert c.get(f"/upload/{t}/thumb/{pid}").status_code == 404
     assert c.post(f"/upload/{t}/delete/{pid}").status_code == 404
     assert len(store.photos("2")) == 1 and other.exists()
+
+
+# ---------------- CLI (Task 9) ----------------
+def test_make_app_secret_path_and_host_guard():
+    from recap_mcp.__main__ import make_app
+    app = make_app(Store(":memory:"), FakeSite(), "x.ngrok.app", "s3cret")
+    with TestClient(app, base_url="http://127.0.0.1:8765") as c:  # context runs the app lifespan
+        _probe(c)
+
+
+def _probe(c):
+    assert c.post("/wrong/mcp", json={}).status_code == 404
+    init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}
+    r = c.post("/s3cret/mcp", json=init, headers={"Accept": "application/json, text/event-stream"})
+    assert r.status_code != 404
+
+
+def test_log_filter_redacts_bearer():
+    import logging
+    from recap_mcp.__main__ import RedactBearer
+    rec = logging.LogRecord("x", logging.INFO, "", 0, "Authorization: %s", ("Bearer abc.def",), None)
+    RedactBearer().filter(rec)
+    assert rec.getMessage() == "Authorization: Bearer ***"
+    rec = logging.LogRecord("x", logging.INFO, "", 0, "Authorization: Bearer abc.def", (), None)
+    RedactBearer().filter(rec)
+    assert rec.getMessage() == "Authorization: Bearer ***"
