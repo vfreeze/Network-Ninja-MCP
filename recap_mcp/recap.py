@@ -245,18 +245,22 @@ def match_events(rows: list[dict], bar_name: str | None, date: str | None, time:
     out = []
     for r in rows:
         if q:
-            v = normalise_name(r["venue_name"])
+            v = normalise_name(r.get("venue_name") or "")
             if q not in v and difflib.SequenceMatcher(None, q, v).ratio() < 0.6:
                 continue
+        if date or time:
+            try:
+                start = datetime.strptime(r.get("start_ts") or "", "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue  # unparseable start: can't match a date/time
         if date and not r["start_ts"].startswith(date):
             continue
         if time:
-            start = datetime.strptime(r["start_ts"], "%Y-%m-%d %H:%M:%S")
             want = datetime.strptime(f"{start:%Y-%m-%d} {time}", "%Y-%m-%d %H:%M")
             if abs(start - want) > timedelta(minutes=60):
                 continue
         out.append(r)
-    return sorted(out, key=lambda r: r["start_ts"], reverse=True)
+    return sorted(out, key=lambda r: r.get("start_ts") or "", reverse=True)
 
 
 def build_draft_payload(defn: dict, fields: list[Field], event_id: str, uid: str,
@@ -283,6 +287,9 @@ def build_draft_payload(defn: dict, fields: list[Field], event_id: str, uid: str
         if f.type == "FIELD_IMAGE_UPLOAD":
             docs = photo_docs.get(f.instance_id) or []
             value, uuids = "|".join(d for d, _ in docs), [u for _, u in docs]
+            kept = old_fields.get(f.instance_id)
+            if not docs and kept and kept.get("value"):  # photo added in the Staff App: carry it through
+                value, uuids = kept["value"], kept.get("document_uuids") or []
         else:
             value, uuids = answers.get(f.instance_id), []
         if not value:

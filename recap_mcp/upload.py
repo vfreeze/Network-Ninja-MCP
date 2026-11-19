@@ -115,13 +115,14 @@ def register_upload_routes(server) -> None:
             return back(token)
         if slot != "crowd":
             jpegs = jpegs[-1:]
-            for old in Deps.store.photos(eid, slot):  # replace; recap docs are just dropped locally
-                Deps.store.delete_photo(old["id"])
-                Path(old["path"]).unlink(missing_ok=True)
+        olds = Deps.store.photos(eid, slot) if slot != "crowd" else []
         for j in jpegs:
             p = data_dir() / "recaps" / eid / slot / f"{uuid.uuid4()}.jpg"
             await anyio.to_thread.run_sync(_write, p, j)
             Deps.store.add_photo(eid, slot, str(p))
+        for old in olds:  # replace only after the new one is safe; recap docs are just dropped locally
+            Deps.store.delete_photo(old["id"])
+            Path(old["path"]).unlink(missing_ok=True)
         if f:
             Deps.store.set_answers(eid, {f.instance_id: "photo"}, set())
         return back(token)

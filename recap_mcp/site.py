@@ -94,11 +94,11 @@ class SiteClient:
                 if r.status_code >= 400 or err:
                     raise SiteError(f"Staff App error (HTTP {r.status_code}): {err or r.text[:200]}")
                 return body
-            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as e:
+            except (httpx.ConnectError, httpx.ConnectTimeout) as e:
                 if not retry or attempt == 2:
                     raise SiteError(f"Could not reach the Staff App: {e}") from e
                 time.sleep(1 << attempt)
-            except httpx.TransportError as e:  # e.g. ReadTimeout: the file may be stored, never retry
+            except httpx.TransportError as e:  # ReadTimeout, RemoteProtocolError: the file may be stored, never retry
                 raise SiteError(f"Staff App connection failed ({type(e).__name__}).") from e
 
     @staticmethod

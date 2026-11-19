@@ -103,7 +103,7 @@ def _refresh(force: bool = False) -> None:
         else:
             continue
         seen.add(eid)
-        rows.append({"events_id": eid, "position_id": str(pos.get("id")), "venue_name": e["venue_name"],
+        rows.append({"events_id": eid, "position_id": str(pos.get("id")), "venue_name": e.get("venue_name") or "",
                      "address": e.get("street_address1"), "city": e.get("city"),
                      "start_ts": e["start_timestamp"], "end_ts": e.get("end_timestamp"), "brand": brand_of(e),
                      "recap_def_id": str(e.get("events_recaps_id")), "recap_def_name": e.get("events_recaps_name"),
@@ -221,7 +221,10 @@ def save_recap_draft(events_id: str) -> dict:
     if existing:  # 3-way: compare site draft with what we last sent; local-only keys are never touched
         site_a = answers_from_draft(existing)
         sent = json.loads((st.draft(eid) or {}).get("fingerprint") or "{}")
-        diff = [k for k in site_a.keys() | sent.keys() if site_a.get(k) != sent.get(k)]
+        local = st.answers(eid)
+        diff = [k for k in site_a.keys() | sent.keys()
+                if site_a.get(k) != sent.get(k) and site_a.get(k) != local.get(k)]
+        st.set_draft(eid, existing["id"], _fp(site_a), None)  # the site's state is now what we last saw
         if diff:
             by_id = {f.instance_id: f.label for f in fields}
             st.set_answers(eid, {k: site_a[k] for k in diff if k in site_a}, set())
@@ -251,7 +254,12 @@ def save_recap_draft(events_id: str) -> dict:
         old = st.draft(eid) or {}
         st.set_draft(eid, old.get("partial_id"), old.get("fingerprint"), str(e))
         return {"error": f"The site rejected the draft: {e}"}
-    st.set_draft(eid, str((resp or {}).get("id") or payload["id"]), _fp(answers_from_draft(payload)), None)
+    try:  # store what the site now holds (it may normalise values), so our own save isn't read as a site edit
+        stored = _site_draft(eid)
+    except SiteError:
+        stored = None
+    st.set_draft(eid, str((resp or {}).get("id") or payload["id"]),
+                 _fp(answers_from_draft(stored or payload)), None)
     st.upsert_events([{**st.event(eid), "site_status": "draft_saved"}])
     return {"saved": True, "still_missing": _report(eid, fields),
             "message": "Draft saved, not submitted. Open the Staff App to review and submit."}

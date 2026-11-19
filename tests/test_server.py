@@ -166,6 +166,15 @@ def test_read_timeout_not_retried(kr):
     assert len(calls) == 1
 
 
+def test_protocol_error_not_retried(kr):
+    def boom(r, n):
+        raise httpx.RemoteProtocolError("dropped")
+    c, calls = mk(boom)
+    with pytest.raises(SiteError):
+        c.upload_gallery_photo("1", b"jpg")
+    assert len(calls) == 1
+
+
 def test_connect_error_retried(kr):
     def h(r, n):
         if n == 1:
@@ -399,6 +408,54 @@ def test_no_previous_save_keeps_local_only_keys():  # (d)
     assert r["saved"] is False and store.answers("1") == {ATT: "40", ENG: "12"} and _no_save(fs)
 
 
+def test_save_deadlock_after_site_edit():  # fix 1a
+    store, fs = mkt(); srv.find_recaps()
+    srv.fill_recap_fields("1", {ATT: "40"})
+    assert srv.save_recap_draft("1")["saved"] is True
+    fs.drs.append(draft_for({ATT: "55"}))
+    r = srv.save_recap_draft("1")
+    assert r["saved"] is False and r["changed"] == [find(F1, "Number of people in attendance").label]
+    srv.fill_recap_fields("1", {ENG: "12"})
+    assert srv.save_recap_draft("1")["saved"] is True
+    payload = [c[1] for c in fs.calls if c[0] == "save_draft"][-1]
+    assert answers_from_draft(payload) == {ATT: "55", ENG: "12"}
+
+
+def test_draft_started_on_site_saves_first_try():  # fix 1b
+    store, fs = mkt(); srv.find_recaps()
+    fs.drs.append(draft_for({ATT: "33"}))
+    srv.get_recap_fields("1")  # imports the site draft
+    srv.fill_recap_fields("1", {ENG: "12"})
+    assert srv.save_recap_draft("1")["saved"] is True
+
+
+def test_resave_ok_when_site_normalises_values():  # fix 3
+    store, fs = mkt(); srv.find_recaps()
+    spend = find(F1, "Total Product Spend")
+    srv.fill_recap_fields("1", {find(F1, "trade spend or a tip").instance_id: "yes"})
+    assert not srv.fill_recap_fields("1", {spend.instance_id: "49.50"})["rejected"]
+    real = fs.save_draft
+
+    def save(payload):
+        r = real(payload)
+        d = json.loads(json.dumps(payload))
+        for fo in d["form_responses"]:
+            for fr in fo["field_responses"]:
+                if fr["value"] == "49.50":
+                    fr["value"] = "49.5"
+        fs.drs[:] = [d]
+        return r
+    fs.save_draft = save
+    assert srv.save_recap_draft("1")["saved"] is True
+    assert srv.save_recap_draft("1")["saved"] is True
+
+
+def test_refresh_survives_event_without_venue_name():  # fix 4
+    store, fs = mkt()
+    del fs.evs[0]["venue_name"]
+    assert srv.find_recaps()["shifts"][0]["events_id"] == "1"
+
+
 # ---------------- photo upload page (Task 8) ----------------
 import io  # noqa: E402
 
@@ -474,6 +531,20 @@ def test_receipt_slot_sets_answer(monkeypatch, tmp_path):
     assert rid not in store.answers("1")
     assert c.get(f"/upload/{t}").status_code == 200
     assert c.post(f"/upload/{t}/bogus", files=[("files", ("a.jpg", _jpeg(), "image/jpeg"))]).status_code == 404
+
+
+def test_single_slot_replace_keeps_old_row_if_write_fails(monkeypatch, tmp_path):  # fix 5
+    store, _, c = _web(monkeypatch, tmp_path)
+    t = store.new_link("1")
+    c.post(f"/upload/{t}/receipt", files=[("files", ("a.jpg", _jpeg(), "image/jpeg"))])
+    old = store.photos("1", "receipt")[0]
+
+    def boom(path, data):
+        raise OSError("disk full")
+    monkeypatch.setattr("recap_mcp.upload._write", boom)
+    with pytest.raises(OSError):
+        c.post(f"/upload/{t}/receipt", files=[("files", ("b.jpg", _jpeg("blue"), "image/jpeg"))])
+    assert [p["id"] for p in store.photos("1", "receipt")] == [old["id"]] and Path(old["path"]).exists()
 
 
 def test_photo_id_scoped_to_token_event(monkeypatch, tmp_path):

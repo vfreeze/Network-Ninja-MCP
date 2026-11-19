@@ -163,3 +163,24 @@ def test_image_docs_and_existing_ids_reused():
     assert p2["id"] == "555"
     assert answers_from_draft(p2)[a.instance_id] == "41"
     assert su.instance_id not in answers_from_draft(p1)
+
+
+def test_staff_app_photo_carried_through():  # fix 2
+    f = parse_definition(D)
+    up = next(x for x in f if x.type == "FIELD_IMAGE_UPLOAD" and "set up" in x.label)
+    existing = {"id": "p1", "form_responses": [{"id": "f9", "events_custom_forms_id": up.form_id, "field_responses": [
+        {"id": "r9", "events_custom_instances_id": up.instance_id, "value": "900", "document_uuids": ["u9"]}]}]}
+    p = build_draft_payload({"id": "1", "version": "1", "updated_at": "x"}, f, "1", "7", {}, {}, existing,
+                            datetime(2026, 1, 1, tzinfo=PHOENIX))
+    frs = [fr for fo in p["form_responses"] for fr in fo["field_responses"]]
+    fr = next(x for x in frs if x["events_custom_instances_id"] == up.instance_id)
+    assert (fr["id"], fr["value"], fr["document_uuids"]) == ("r9", "900", ["u9"])
+
+
+def test_match_events_tolerates_bad_rows():  # fix 4
+    rows = [{"venue_name": "Red Zone", "start_ts": "2026-11-10 18:00:00"},
+            {"venue_name": None, "start_ts": "2026-11-10 18:00:00"},
+            {"venue_name": "Red Zone", "start_ts": "garbage"},
+            {"venue_name": "Red Zone"}]
+    assert match_events(rows, "red zone", "2026-11-10", "18:00") == rows[:1]
+    assert len(match_events(rows, "red zone", None, None)) == 3  # no date/time: bad start_ts is not fatal
