@@ -276,4 +276,6 @@ def build_server(store, site, public_url: str) -> MCPServer:
     server = MCPServer("recap-mcp")
     for fn, desc in DESCRIPTIONS.items():
         server.add_tool(fn, description=desc)
+    from .upload import register_upload_routes  # late: upload imports this module
+    register_upload_routes(server)
     return server

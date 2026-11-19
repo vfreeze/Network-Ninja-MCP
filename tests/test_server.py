@@ -397,3 +397,90 @@ def test_no_previous_save_keeps_local_only_keys():  # (d)
     fs.drs.append(draft_for({ATT: "40"}))
     r = srv.save_recap_draft("1")
     assert r["saved"] is False and store.answers("1") == {ATT: "40", ENG: "12"} and _no_save(fs)
+
+
+# ---------------- photo upload page (Task 8) ----------------
+import io  # noqa: E402
+
+from PIL import Image as PILImage  # noqa: E402
+from starlette.testclient import TestClient  # noqa: E402
+
+
+def _jpeg(color="red"):
+    b = io.BytesIO(); PILImage.new("RGB", (40, 30), color).save(b, "JPEG"); return b.getvalue()
+
+
+def _web(monkeypatch, tmp_path):
+    monkeypatch.setenv("RECAP_DATA", str(tmp_path))
+    store, fs = mkt(); srv.find_recaps()
+    fs.removed, fs.remove_error = [], None
+
+    def remove(ids):
+        if fs.remove_error:
+            raise fs.remove_error
+        fs.removed += list(ids)
+    fs.remove_gallery_photos = remove
+    app = srv.build_server(store, fs, "https://x.test").streamable_http_app(streamable_http_path="/secret/mcp")
+    return store, fs, TestClient(app, follow_redirects=False)
+
+
+def test_upload_rejects_unreadable_image(monkeypatch, tmp_path):
+    store, _, c = _web(monkeypatch, tmp_path)
+    t = store.new_link("1")
+    r = c.post(f"/upload/{t}/crowd", files=[("files", ("a.jpg", b"not an image", "image/jpeg"))])
+    assert r.status_code == 400 and store.photos("1") == []
+
+
+def test_upload_link_expires(monkeypatch, tmp_path):
+    store, _, c = _web(monkeypatch, tmp_path)
+    t = store.new_link("1", minutes=-1)
+    assert c.get(f"/upload/{t}").status_code == 404
+    assert c.post(f"/upload/{t}/crowd", files=[("files", ("a.jpg", _jpeg(), "image/jpeg"))]).status_code == 404
+    assert c.get("/upload/bogus").status_code == 404
+
+
+def test_crowd_delete_removes_site_copy(monkeypatch, tmp_path):
+    store, fs, c = _web(monkeypatch, tmp_path)
+    t = store.new_link("1")
+    assert c.post(f"/upload/{t}/crowd", files=[("files", ("a.jpg", _jpeg(), "image/jpeg"))]).status_code == 303
+    p = store.photos("1", "crowd")[0]
+    store.mark_uploaded(p["id"], "77", None)
+    assert c.post(f"/upload/{t}/delete/{p['id']}").status_code == 303
+    assert fs.removed == ["77"] and store.photos("1") == [] and not Path(p["path"]).exists()
+
+
+def test_crowd_delete_keeps_row_when_site_fails(monkeypatch, tmp_path):
+    store, fs, c = _web(monkeypatch, tmp_path)
+    t = store.new_link("1")
+    c.post(f"/upload/{t}/crowd", files=[("files", ("a.jpg", _jpeg(), "image/jpeg"))])
+    p = store.photos("1")[0]
+    store.mark_uploaded(p["id"], "77", None)
+    fs.remove_error = SiteError("site down")
+    r = c.post(f"/upload/{t}/delete/{p['id']}")
+    assert "site down" in r.text and len(store.photos("1")) == 1
+
+
+def test_receipt_slot_sets_answer(monkeypatch, tmp_path):
+    store, _, c = _web(monkeypatch, tmp_path)
+    t = store.new_link("1")
+    rid = srv.slot_field(F1, "receipt").instance_id
+    r = c.post(f"/upload/{t}/receipt", files=[("files", ("a.jpg", _jpeg(), "image/jpeg"))])
+    assert r.status_code == 303 and store.answers("1")[rid] == "photo"
+    c.post(f"/upload/{t}/receipt", files=[("files", ("b.jpg", _jpeg("blue"), "image/jpeg"))])
+    rows = store.photos("1", "receipt")
+    assert len(rows) == 1  # replaced
+    assert c.get(f"/upload/{t}/thumb/{rows[0]['id']}").headers["content-type"] == "image/jpeg"
+    c.post(f"/upload/{t}/delete/{rows[0]['id']}")
+    assert rid not in store.answers("1")
+    assert c.get(f"/upload/{t}").status_code == 200
+    assert c.post(f"/upload/{t}/bogus", files=[("files", ("a.jpg", _jpeg(), "image/jpeg"))]).status_code == 404
+
+
+def test_photo_id_scoped_to_token_event(monkeypatch, tmp_path):
+    store, _, c = _web(monkeypatch, tmp_path)
+    other = tmp_path / "o.jpg"; other.write_bytes(_jpeg())
+    pid = store.add_photo("2", "crowd", str(other))
+    t = store.new_link("1")
+    assert c.get(f"/upload/{t}/thumb/{pid}").status_code == 404
+    assert c.post(f"/upload/{t}/delete/{pid}").status_code == 404
+    assert len(store.photos("2")) == 1 and other.exists()
