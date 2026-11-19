@@ -257,3 +257,73 @@ def match_events(rows: list[dict], bar_name: str | None, date: str | None, time:
                 continue
         out.append(r)
     return sorted(out, key=lambda r: r["start_ts"], reverse=True)
+
+
+def build_draft_payload(defn: dict, fields: list[Field], event_id: str, uid: str,
+                        answers: dict[str, str], photo_docs: dict[str, list[tuple[str, str]]],
+                        existing: dict | None, now: datetime) -> dict:
+    existing = existing or {}
+    n = 0
+
+    def prov() -> str:
+        nonlocal n
+        n += 1
+        return f"provisional_{n}"
+
+    old_forms = {f["events_custom_forms_id"]: f for f in existing.get("form_responses", [])}
+    old_fields = {fr["events_custom_instances_id"]: fr
+                  for f in old_forms.values() for fr in f.get("field_responses", [])}
+    local = now.astimezone(PHOENIX)
+    rid = existing.get("id") or prov()
+    vis = visible_ids(fields, answers)
+    forms: dict[str, dict] = {}
+    for f in fields:
+        if f.instance_id not in vis or f.type == "FIELD_FORMULA":
+            continue
+        if f.type == "FIELD_IMAGE_UPLOAD":
+            docs = photo_docs.get(f.instance_id) or []
+            value, uuids = "|".join(d for d, _ in docs), [u for _, u in docs]
+        else:
+            value, uuids = answers.get(f.instance_id), []
+        if not value:
+            continue
+        form = forms.get(f.form_id)
+        if form is None:
+            form = forms[f.form_id] = {
+                "id": old_forms.get(f.form_id, {}).get("id") or prov(),
+                "events_custom_responses_id": rid, "events_custom_forms_id": f.form_id,
+                "products_id": None, "product_labels_id": None, "merchandising_activities_id": None,
+                "customers_id": None, "sampling_feedback": None, "out_of_stock": False,
+                "field_responses": [],
+            }
+        form["field_responses"].append({
+            "id": old_fields.get(f.instance_id, {}).get("id") or prov(), "value": value,
+            "visible_on_submit": True, "data_link_field_names": None, "events_id": event_id,
+            "events_custom_id": f.field_id, "events_custom_responses_id": rid,
+            "events_custom_forms_responses_id": form["id"], "events_custom_field_blocks_id": f.block_id,
+            "events_custom_instances_id": f.instance_id, "document_uuids": uuids,
+        })
+    return {
+        "id": rid, "staffing_users_id": uid, "users_id": None,
+        "started_at": existing.get("started_at") or local.strftime("%Y-%m-%d %H:%M:%S"),
+        "ended_at": local.strftime("%Y-%m-%d %H:%M:%S"),
+        "started_at_tz": existing.get("started_at_tz") or local.isoformat(timespec="seconds"),
+        "ended_at_tz": local.isoformat(timespec="seconds"),
+        "start_lat": None, "start_lon": None, "end_lat": None, "end_lon": None,
+        "events_id": event_id, "events_recaps_id": defn["id"],
+        "events_recaps_external_links_views_id": None,
+        "events_recaps_version": defn["version"], "events_recaps_updated_at": defn["updated_at"],
+        "staff_app_version": defn.get("_app_version", "5.61.0"), "staff_app_version_full": "recap-mcp",
+        "last_staff_app_data_sync_uuid": None, "status_id": None,
+        "form_responses": list(forms.values()), "form_comments": [],
+    }
+
+
+def answers_from_draft(draft: dict) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for form in draft.get("form_responses", []):
+        for fr in form.get("field_responses", []):
+            if fr.get("field_type") in ("FIELD_FORMULA", "FIELD_IMAGE_UPLOAD") or fr.get("document_uuids"):
+                continue
+            out[str(fr["events_custom_instances_id"])] = fr["value"]
+    return out

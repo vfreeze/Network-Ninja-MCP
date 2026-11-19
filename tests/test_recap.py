@@ -5,7 +5,7 @@ import pytest
 
 from recap_mcp.recap import (AnswerError, brand_of, check_rules, coerce, find, match_events, missing,
                              needs_recap, parse_definition, visible_ids)
-from recap_mcp.recap import PHOENIX
+from recap_mcp.recap import PHOENIX, answers_from_draft, build_draft_payload
 
 D = json.load(open("tests/fixtures/def1.json", encoding="utf-8"))
 
@@ -134,3 +134,32 @@ def test_match_normalises_names():
     assert len(match_events(rows, "red zone", None, "15:00")) == 1
     assert len(match_events(rows, None, "2026-11-22", None)) == 1
     assert match_events(rows, "red zone", None, None)[0]["start_ts"] == "2026-11-22 15:00:00"
+
+
+def test_payload_shape_and_visibility():
+    f = parse_definition(D); a = find(f, "in attendance"); ts = find(f, "trade spend or a tip")
+    p = build_draft_payload(D, f, "98033", "19985", {a.instance_id: "40", ts.instance_id: "f"}, {}, None, NOW)
+    assert p["events_id"] == "98033" and p["events_recaps_id"] == D["id"] and p["status_id"] is None
+    frs = [fr for form in p["form_responses"] for fr in form["field_responses"]]
+    assert {fr["events_custom_instances_id"]: fr["value"] for fr in frs} == {a.instance_id: "40", ts.instance_id: "f"}
+    assert all(str(fr["id"]).startswith("provisional_") for fr in frs)
+
+
+def test_hidden_answers_not_sent():
+    f = parse_definition(D); ts = find(f, "trade spend or a tip"); sp = find(f, "Total Product Spend")
+    p = build_draft_payload(D, f, "1", "19985", {ts.instance_id: "f", sp.instance_id: "49.50"}, {}, None, NOW)
+    sent = {fr["events_custom_instances_id"] for form in p["form_responses"] for fr in form["field_responses"]}
+    assert sp.instance_id not in sent
+    assert sp.instance_id not in {x.instance_id for x in missing(f, {ts.instance_id: "f"})["answers"]}
+
+
+def test_image_docs_and_existing_ids_reused():
+    f = parse_definition(D); su = find(f, "activation set up"); a = find(f, "in attendance")
+    p1 = build_draft_payload(D, f, "1", "19985", {a.instance_id: "40", su.instance_id: "photo"}, {su.instance_id: [("111", "u1"), ("112", "u2")]}, None, NOW)
+    fr = next(x for form in p1["form_responses"] for x in form["field_responses"] if x["events_custom_instances_id"] == su.instance_id)
+    assert fr["value"] == "111|112" and fr["document_uuids"] == ["u1", "u2"]
+    existing = json.loads(json.dumps(p1)); existing["id"] = "555"
+    p2 = build_draft_payload(D, f, "1", "19985", {a.instance_id: "41"}, {}, existing, NOW)
+    assert p2["id"] == "555"
+    assert answers_from_draft(p2)[a.instance_id] == "41"
+    assert su.instance_id not in answers_from_draft(p1)
