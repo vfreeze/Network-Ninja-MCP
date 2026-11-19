@@ -1,4 +1,5 @@
 """Pure logic: parse a recap definition and decide which fields are visible."""
+import math
 from dataclasses import dataclass
 
 
@@ -151,13 +152,15 @@ def coerce(field: Field, raw) -> str:
             n = float(s.replace(",", "").replace(" ", ""))
         except ValueError:
             n = -1.5
-        if n < 0 or n != int(n):
+        if not math.isfinite(n) or n < 0 or n != int(n):
             raise AnswerError(f"{label} needs a whole number, zero or more.")
         return str(int(n))
     if t == "FIELD_FLOAT2":
         try:
             n = float(s.replace("$", "").replace(",", "").replace(" ", ""))
         except ValueError:
+            raise AnswerError(f"{label} needs a dollar amount like 49.50.")
+        if not math.isfinite(n):
             raise AnswerError(f"{label} needs a dollar amount like 49.50.")
         return f"{n:.2f}"
     if t in ("FIELD_TEXT", "FIELD_TEXTAREA"):

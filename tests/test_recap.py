@@ -88,3 +88,11 @@ def test_missing_splits_answers_and_uploads():
     assert all(x.type != "FIELD_FORMULA" for x in m["answers"])
     up = find(f, "activation set up").instance_id
     assert up not in {x.instance_id for x in missing(f, {up: "photo"})["uploads"]}
+
+
+def test_coerce_rejects_non_finite_numbers():
+    f = parse_definition(D)
+    for fld in (find(f, "Number of people in attendance"), find(f, "Total Product Spend")):
+        for bad in ("nan", "inf", "-inf"):
+            with pytest.raises(AnswerError):
+                coerce(fld, bad)
