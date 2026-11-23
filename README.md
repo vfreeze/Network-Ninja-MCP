@@ -52,7 +52,13 @@ Register-ScheduledTask -Force -TaskName RecapMCP -Trigger $trigger -Settings $se
 Register-ScheduledTask -Force -TaskName RecapNgrok -Trigger $trigger -Settings $settings -Action (New-ScheduledTaskAction -Execute wscript.exe -Argument "`"$dir\hidden.vbs`" `"$env:LOCALAPPDATA\Microsoft\WindowsApps\ngrok.exe`" http --url=$domain 8765" -WorkingDirectory $dir)
 ```
 
-Both run hidden (`hidden.vbs` starts them with no window). Logs: `data\server.log`; tunnel status: http://127.0.0.1:4040. Stop/start: `Stop-ScheduledTask RecapMCP` / `Start-ScheduledTask RecapMCP` (same for `RecapNgrok`); if a process lingers, `Stop-Process -Name ngrok` or end `python.exe` in Task Manager.
+Both run hidden (`hidden.vbs` starts them with no window). Logs: `data\server.log`; tunnel status: http://127.0.0.1:4040. Restart the server with `.\restart.ps1`. `Stop-ScheduledTask` only stops the hidden wrapper, not the program: to stop for real, end `python.exe` / `ngrok.exe` in Task Manager.
+
+To restart the server automatically after every commit, pull, checkout or rebase, install the git hooks once:
+
+```
+foreach ($h in "post-commit","post-merge","post-checkout","post-rewrite") { Set-Content ".git\hooks\$h" "#!/bin/sh`npowershell -NoProfile -ExecutionPolicy Bypass -File restart.ps1`n" -Encoding ascii -NoNewline }
+```
 
 ## 5. Add it to Claude
 
