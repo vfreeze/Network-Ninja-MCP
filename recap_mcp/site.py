@@ -1,4 +1,4 @@
-"""Staff App JSON API client. Drafts only: the final-submit endpoint is deliberately absent."""
+"""Staff App JSON API client. Recaps are drafts only: the final recap-submit endpoint is deliberately absent."""
 import base64
 import json
 import re
@@ -166,3 +166,7 @@ class SiteClient:
 
     def save_draft(self, payload: dict) -> dict:
         return self._send("POST", "partial_recap_response_set", False, json=payload)
+
+    def submit_primary_claim(self, position_id: str, payload: dict) -> dict:
+        """Files the pay claim for a shift. Only called after the user confirmed the preview."""
+        return self._send("POST", f"staffing_user/{self.uid()}/positions/{position_id}/primary_claim", False, json=payload)

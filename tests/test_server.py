@@ -98,7 +98,16 @@ def mk(handler):
 def test_no_submit_or_claim_endpoints_in_source():
     src = "".join(p.read_text(encoding="utf-8") for p in Path("recap_mcp").glob("*.py"))
     assert re.search(r"['\"/]recap_response_set['\"]", src) is None
-    assert re.search(r"['\"/][a-z_/]*claim", src) is None
+    # the only claim endpoint is filing your own primary (time) claim; nothing withdraws/deletes/touches others'
+    assert set(re.findall(r"/([a-z_]*claims?[a-z_]*)[/\"'?]", src)) <= {"primary_claim"}
+    assert not re.search(r"withdraw|secondary_claims|other_users", src)
+
+
+def test_submit_primary_claim_posts_to_position(kr):
+    c, calls = mk(lambda r, n: httpx.Response(200, json={"primary_claim": {"id": "9"}}))
+    assert c.submit_primary_claim("148947", {"x": 1}) == {"primary_claim": {"id": "9"}}
+    assert str(calls[0].url).endswith("staffing_user/42/positions/148947/primary_claim")
+    assert json.loads(calls[0].content) == {"x": 1}
 
 
 def test_uid_and_get_sends_bearer(kr):

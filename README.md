@@ -65,9 +65,11 @@ claude.ai -> Settings -> Connectors -> Add custom connector. Paste `https://<dom
 - "Attendance was about 80, I engaged around 40 people." (it will mark estimates)
 - "Give me a link to upload my photos."
 - "I uploaded the receipt, read it and fill in the spend. Then save the draft."
+- "Which shifts still need a claim?" / "Submit the claim for Fletchers, I worked the scheduled times."
 
 ## Safety
 
-- It only saves **drafts**. It never submits a recap and never touches claims. You review and submit in the Staff App.
+- It only saves recap **drafts**. It never submits a recap. You review and submit in the Staff App.
+- Pay claims: `check_claims` lists shifts and their claim status; `submit_claim` files the time claim (scheduled times unless you say otherwise) only after reading it back and getting your yes. It never withdraws or deletes claims; edit those in the Staff App.
 - Crowd photos go **live in the event photo gallery** on the site, not just into the draft.
 - Anyone with the connector URL can use the server, so don't share it. To rotate it, delete the `connector_secret` entry for `recap-mcp` in Windows Credential Manager and run `set-credentials` again.

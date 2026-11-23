@@ -7,6 +7,7 @@ from mcp.server.mcpserver import Image, MCPServer
 
 from .recap import (PHOENIX, AnswerError, Field, answers_from_draft, brand_of, build_draft_payload, check_rules,
                     coerce, match_events, missing, needs_recap, parse_definition, visible_ids)
+from .claims import TS, build_claim_payload, claim_rows, parse_time, primary_types
 from .site import SiteError
 
 SLOT_KEYWORDS = {"setup": ["set up", "set-up"], "receipt": ["receipt"],
@@ -265,6 +266,61 @@ def save_recap_draft(events_id: str) -> dict:
             "message": "Draft saved, not submitted. Open the Staff App to review and submit."}
 
 
+@_safe
+def check_claims(bar_name: str | None = None, date: str | None = None, time: str | None = None,
+                 include_all: bool = False) -> dict:
+    events = {str(e["id"]): e for e in Deps.site.events()}
+    rows = claim_rows(Deps.site.positions(), events, _now())
+    if not include_all:
+        rows = [r for r in rows if r["claim_status"] not in ("Approved", "locked")]
+    hits = match_events(rows, bar_name, date, time)
+    out = [{k: v for k, v in r.items() if k != "start_ts"} | {"date": r["start_ts"][:10]} for r in hits]
+    return {"shifts": out, "needs_claim": sum(r["claim_status"] == "needs_claim" for r in out)}
+
+
+@_safe
+def submit_claim(events_id: str, actual_start: str | None = None, actual_end: str | None = None,
+                 claim_type: str | None = None, confirm: bool = False) -> dict:
+    site = Deps.site
+    pos = next((p for p in site.positions() if str(p.get("events_id")) == str(events_id)), None)
+    event = next((e for e in site.events() if str(e["id"]) == str(events_id)), None)
+    if not pos or not event:
+        return {"error": "No shift of yours with that events_id; call check_claims first."}
+    row = (claim_rows([pos], {str(event["id"]): event}, _now()) or [None])[0]
+    if not row:
+        return {"error": "This shift can't be claimed (it hasn't started, was cancelled, or claims are off)."}
+    if row["claim_status"] != "needs_claim":
+        return {"error": f"Not claimable here: claim status is {row['claim_status']}. Edit it in the Staff App."}
+    types = primary_types(event, pos)
+    if pos.get("claim_types_id"):
+        types = [t for t in types if str(t["id"]) == str(pos["claim_types_id"])] or types
+    if claim_type:
+        types = [t for t in types if t["name"].lower() == claim_type.lower()]
+    if len(types) != 1:
+        if not types:
+            return {"error": "No matching claim type for this shift; file it in the Staff App."}
+        return {"ask_user": "Which claim type?", "claim_types": [t["name"] for t in types]}
+    ctype = types[0]
+    day = datetime.strptime(pos["start_time"][:10], "%Y-%m-%d")
+    start = parse_time(day, actual_start) if actual_start else datetime.strptime(pos["start_time"], TS)
+    end = parse_time(day, actual_end) if actual_end else datetime.strptime(pos["end_time"], TS)
+    payload = build_claim_payload(pos, event, site.uid(), str(ctype["id"]), start, end)
+    p = payload["position"]
+    preview = {"bar": event.get("venue_name"), "date": pos["start_time"][:10], "claim_type": ctype["name"],
+               "actual_start": p["actual_start"][11:16], "actual_end": p["actual_end"][11:16],
+               "hours": p["actual_hours"], "scheduled": row["scheduled"]}
+    if (p["actual_start"], p["actual_end"]) != (pos["start_time"], pos.get("end_time")):
+        preview["warning"] = ("Times differ from the schedule. " + (ctype.get("description") or "")).strip()
+    if not confirm:
+        return {"preview": preview, "submitted": False,
+                "tell_user": "Read this back and get an explicit yes, then call again with confirm=true."}
+    resp = site.submit_primary_claim(str(pos["id"]), payload) or {}
+    c = resp.get("primary_claim") or {}
+    return {"submitted": True, **preview, "claim_status": c.get("claim_statuses_name") or "submitted",
+            "amount": c.get("amount"),
+            "message": "Pay claim submitted. It shows in the Staff App and can be edited there until approved."}
+
+
 DESCRIPTIONS = {
     find_recaps: "List shifts needing a recap (optionally by bar name/date/time). If several match, ask the user "
                  "which one (date/time/city) before continuing. Use events_id in the other tools.",
@@ -276,6 +332,11 @@ DESCRIPTIONS = {
     read_receipt: "View the uploaded receipt photo; read subtotal, tip, total and items, then fill the fields.",
     save_recap_draft: "Save the recap as a DRAFT on the Staff App. This never submits: tell the user to open the "
                       "Staff App to review and submit. If the user edited the draft there, their changes win.",
+    check_claims: "List past shifts and their pay-claim status (needs_claim, Pending, Declined; include_all adds "
+                  "Approved and locked). Optionally filter by bar name/date/time.",
+    submit_claim: "File the pay (time) claim for a shift. Times default to the scheduled times; pass actual_start/"
+                  "actual_end only if the user says they differ. First call WITHOUT confirm: read the preview to the "
+                  "user and only call again with confirm=true after they explicitly say yes. Never confirm on your own.",
 }
 
 
