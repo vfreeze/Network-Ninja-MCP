@@ -513,22 +513,37 @@ def _web(monkeypatch, tmp_path):
 def test_upload_rejects_unreadable_image(monkeypatch, tmp_path):
     store, _, c = _web(monkeypatch, tmp_path)
     t = store.new_link("1")
-    r = c.post(f"/upload/{t}/crowd", files=[("files", ("a.jpg", b"not an image", "image/jpeg"))])
+    r = c.post(f"/upload/{t}", files=[("crowd", ("a.jpg", b"not an image", "image/jpeg"))])
     assert r.status_code == 400 and store.photos("1") == []
+
+
+def test_one_upload_saves_every_slot_and_keeps_good_files_when_one_is_bad(monkeypatch, tmp_path):
+    store, _, c = _web(monkeypatch, tmp_path)
+    t = store.new_link("1")
+    r = c.post(f"/upload/{t}", files=[("setup", ("s.jpg", _jpeg(), "image/jpeg")),
+                                      ("crowd", ("c1.jpg", _jpeg(), "image/jpeg")),
+                                      ("crowd", ("c2.jpg", _jpeg("blue"), "image/jpeg"))])
+    assert r.status_code == 303 and r.headers["location"].endswith("?done=3")
+    assert "Uploaded 3 photos" in c.get(r.headers["location"]).text
+    assert len(store.photos("1", "setup")) == 1 and len(store.photos("1", "crowd")) == 2
+    r = c.post(f"/upload/{t}", files=[("receipt", ("bad.jpg", b"nope", "image/jpeg")),
+                                      ("crowd", ("c3.jpg", _jpeg(), "image/jpeg"))])
+    assert r.status_code == 400 and "bad.jpg" in r.text and "Uploaded 1" in r.text
+    assert len(store.photos("1", "crowd")) == 3 and store.photos("1", "receipt") == []
 
 
 def test_upload_link_expires(monkeypatch, tmp_path):
     store, _, c = _web(monkeypatch, tmp_path)
     t = store.new_link("1", minutes=-1)
     assert c.get(f"/upload/{t}").status_code == 404
-    assert c.post(f"/upload/{t}/crowd", files=[("files", ("a.jpg", _jpeg(), "image/jpeg"))]).status_code == 404
+    assert c.post(f"/upload/{t}", files=[("crowd", ("a.jpg", _jpeg(), "image/jpeg"))]).status_code == 404
     assert c.get("/upload/bogus").status_code == 404
 
 
 def test_crowd_delete_removes_site_copy(monkeypatch, tmp_path):
     store, fs, c = _web(monkeypatch, tmp_path)
     t = store.new_link("1")
-    assert c.post(f"/upload/{t}/crowd", files=[("files", ("a.jpg", _jpeg(), "image/jpeg"))]).status_code == 303
+    assert c.post(f"/upload/{t}", files=[("crowd", ("a.jpg", _jpeg(), "image/jpeg"))]).status_code == 303
     p = store.photos("1", "crowd")[0]
     store.mark_uploaded(p["id"], "77", None)
     assert c.post(f"/upload/{t}/delete/{p['id']}").status_code == 303
@@ -538,7 +553,7 @@ def test_crowd_delete_removes_site_copy(monkeypatch, tmp_path):
 def test_crowd_delete_keeps_row_when_site_fails(monkeypatch, tmp_path):
     store, fs, c = _web(monkeypatch, tmp_path)
     t = store.new_link("1")
-    c.post(f"/upload/{t}/crowd", files=[("files", ("a.jpg", _jpeg(), "image/jpeg"))])
+    c.post(f"/upload/{t}", files=[("crowd", ("a.jpg", _jpeg(), "image/jpeg"))])
     p = store.photos("1")[0]
     store.mark_uploaded(p["id"], "77", None)
     fs.remove_error = SiteError("site down")
@@ -550,29 +565,30 @@ def test_receipt_slot_sets_answer(monkeypatch, tmp_path):
     store, _, c = _web(monkeypatch, tmp_path)
     t = store.new_link("1")
     rid = srv.slot_field(F1, "receipt").instance_id
-    r = c.post(f"/upload/{t}/receipt", files=[("files", ("a.jpg", _jpeg(), "image/jpeg"))])
+    r = c.post(f"/upload/{t}", files=[("receipt", ("a.jpg", _jpeg(), "image/jpeg"))])
     assert r.status_code == 303 and store.answers("1")[rid] == "photo"
-    c.post(f"/upload/{t}/receipt", files=[("files", ("b.jpg", _jpeg("blue"), "image/jpeg"))])
+    c.post(f"/upload/{t}", files=[("receipt", ("b.jpg", _jpeg("blue"), "image/jpeg"))])
     rows = store.photos("1", "receipt")
     assert len(rows) == 1  # replaced
     assert c.get(f"/upload/{t}/thumb/{rows[0]['id']}").headers["content-type"] == "image/jpeg"
     c.post(f"/upload/{t}/delete/{rows[0]['id']}")
     assert rid not in store.answers("1")
     assert c.get(f"/upload/{t}").status_code == 200
-    assert c.post(f"/upload/{t}/bogus", files=[("files", ("a.jpg", _jpeg(), "image/jpeg"))]).status_code == 404
+    assert c.post(f"/upload/{t}", files=[("bogus", ("a.jpg", _jpeg(), "image/jpeg"))]).status_code == 303
+    assert len(store.photos("1")) == 0  # unknown field names are ignored
 
 
 def test_single_slot_replace_keeps_old_row_if_write_fails(monkeypatch, tmp_path):  # fix 5
     store, _, c = _web(monkeypatch, tmp_path)
     t = store.new_link("1")
-    c.post(f"/upload/{t}/receipt", files=[("files", ("a.jpg", _jpeg(), "image/jpeg"))])
+    c.post(f"/upload/{t}", files=[("receipt", ("a.jpg", _jpeg(), "image/jpeg"))])
     old = store.photos("1", "receipt")[0]
 
     def boom(path, data):
         raise OSError("disk full")
     monkeypatch.setattr("recap_mcp.upload._write", boom)
     with pytest.raises(OSError):
-        c.post(f"/upload/{t}/receipt", files=[("files", ("b.jpg", _jpeg("blue"), "image/jpeg"))])
+        c.post(f"/upload/{t}", files=[("receipt", ("b.jpg", _jpeg("blue"), "image/jpeg"))])
     assert [p["id"] for p in store.photos("1", "receipt")] == [old["id"]] and Path(old["path"]).exists()
 
 

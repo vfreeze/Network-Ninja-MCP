@@ -3,6 +3,7 @@ import html
 import io
 import os
 import uuid
+from datetime import datetime
 from pathlib import Path
 from string import Template
 
@@ -49,32 +50,48 @@ def register_upload_routes(server) -> None:
         eid = Deps.store.link_event(t)
         return (eid, t) if eid else None
 
-    def page(eid, token, error=""):
+    def slots(fields):  # (slot, field or None for crowd, label) in page order
+        for slot in SINGLE:
+            if (f := slot_field(fields, slot)):
+                yield slot, f, f.label
+        yield "crowd", None, "Crowd photos"
+
+    def page(eid, token, error="", done=0, status=200):
         ev, fields = Deps.store.event(eid), fields_of(eid)
         e = html.escape
         secs = []
-        for slot in (*SINGLE, "crowd"):
-            f = slot_field(fields, slot) if slot != "crowd" else None
-            if slot != "crowd" and not f:
-                continue
+        for slot, f, label in slots(fields):
             rows = Deps.store.photos(eid, slot)
-            label = "Event photo gallery" if slot == "crowd" else f.label
-            head = f"Crowd: {len(rows)} of 5+" if slot == "crowd" else ""
+            crowd = slot == "crowd"
             thumbs = "".join(
-                f'<div class="ph"><img src="/upload/{token}/thumb/{p["id"]}" alt="">'
-                f'<form method="post" action="/upload/{token}/delete/{p["id"]}"><button>Remove</button></form></div>'
-                for p in rows)
-            multi = " multiple" if slot == "crowd" else ""
+                f'<figure class="ph"><img src="/upload/{token}/thumb/{p["id"]}" alt="{e(label)}, photo {i}">'
+                f'<form class="rm" method="post" action="/upload/{token}/delete/{p["id"]}">'
+                f'<button class="x" aria-label="Remove photo {i}">&times;</button></form></figure>'
+                for i, p in enumerate(rows, 1))
+            badge = (f'{len(rows)} added' if crowd else "Added") if rows else "Not added"
+            hint = ("These go straight to the event's photo gallery. Aim for 5 or more." if crowd
+                    else "One photo. A new one replaces the old one." if rows else "")
+            pick = "Add photos" if crowd else "Replace photo" if rows else "Add photo"
             secs.append(
-                f'<section><h2>{e(label)}</h2><p>{head}</p><div class="row">{thumbs}</div>'
-                f'<form method="post" action="/upload/{token}/{slot}" enctype="multipart/form-data">'
-                f'<input type="file" name="files" accept="image/*"{multi}> <button>Upload</button></form></section>')
-        title = f"{e(ev['venue_name'])} - {e(ev['start_ts'][:10])}"
-        return HTMLResponse(PAGE.substitute(title=title, sections="\n".join(secs),
-                                            error=f'<p class="err">{e(error)}</p>' if error else ""))
+                f'<section class="card"><div class="head"><h2>{e(label)}</h2>'
+                f'<span class="badge{" done" if rows else ""}">{badge}</span></div>'
+                + (f'<p class="hint">{hint}</p>' if hint else "") +
+                f'<div class="thumbs">{thumbs}</div><div class="chosen" aria-live="polite"></div>'
+                f'<label class="pick"><input class="sr" type="file" name="{slot}" accept="image/*" form="up"'
+                f'{" multiple" if crowd else ""}><span>{pick}</span></label></section>')
+        notice = (f'<p class="msg err" role="alert">{e(error)}</p>' if error else
+                  f'<p class="msg ok" role="status">Uploaded {done} photo{"s" if done != 1 else ""}.</p>' if done else "")
+        try:
+            d = datetime.strptime(ev["start_ts"][:16], "%Y-%m-%d %H:%M")
+            when = f"{d:%a}, {d:%b} {d.day} &middot; {d.hour % 12 or 12}:{d:%M} {d:%p}"
+        except ValueError:
+            when = e(ev["start_ts"][:10])
+        return HTMLResponse(PAGE.substitute(title=e(ev["venue_name"]), when=when, notice=notice,
+                                            sections="\n".join(secs), action=f"/upload/{token}"),
+                            status_code=status)
 
-    def back(token):
-        return RedirectResponse(f"/upload/{token}", status_code=303)
+    def back(token, done=0):
+        return RedirectResponse(f"/upload/{token}" + (f"?done={done}" if done else ""), status_code=303)
 
     def photo_of(c, request):
         # only this event's photos are searched, so another shift's photo id never matches
@@ -87,45 +104,51 @@ def register_upload_routes(server) -> None:
         c = ctx(request)
         if not c:
             return Response("Link expired or unknown.", status_code=404)
-        return await anyio.to_thread.run_sync(page, *c)
+        try:
+            done = int(request.query_params.get("done") or 0)
+        except ValueError:
+            done = 0
+        return await anyio.to_thread.run_sync(lambda: page(*c, done=done))
 
-    async def upload(request: Request):
+    async def upload(request: Request):  # one form, one file input per slot (named after the slot)
         c = ctx(request)
-        slot = request.path_params["slot"]
-        if not c or slot not in (*SINGLE, "crowd"):
-            return Response("Not found.", status_code=404)
+        if not c:
+            return Response("Link expired or unknown.", status_code=404)
         eid, token = c
         fields = await anyio.to_thread.run_sync(fields_of, eid)
-        f = slot_field(fields, slot) if slot != "crowd" else None
-        if slot != "crowd" and not f:
-            return Response("Not found.", status_code=404)
         form = await request.form()
-        raw = []
-        for u in form.getlist("files"):
-            if not getattr(u, "filename", None):
+        errors, done = [], 0
+        for slot, f, label in slots(fields):  # each slot saved on its own: one bad file never loses the rest
+            jpegs = []
+            for u in form.getlist(slot):
+                if not getattr(u, "filename", None):
+                    continue
+                if (u.size or 0) > MAX_BYTES:
+                    errors.append(f"{label}: {u.filename} is too large (25 MB max).")
+                    continue
+                try:
+                    jpegs.append(await anyio.to_thread.run_sync(normalise_image, await u.read()))
+                except ValueError:
+                    errors.append(f"{label}: {u.filename} is not a readable image.")
+            if not jpegs:
                 continue
-            if (u.size or 0) > MAX_BYTES:
-                return Response("File too large (25 MB max).", status_code=413)
-            raw.append(await u.read())
-        try:
-            jpegs = [await anyio.to_thread.run_sync(normalise_image, d) for d in raw]
-        except ValueError as e:
-            return Response(str(e), status_code=400)
-        if not jpegs:
-            return back(token)
-        if slot != "crowd":
-            jpegs = jpegs[-1:]
-        olds = Deps.store.photos(eid, slot) if slot != "crowd" else []
-        for j in jpegs:
-            p = data_dir() / "recaps" / eid / slot / f"{uuid.uuid4()}.jpg"
-            await anyio.to_thread.run_sync(_write, p, j)
-            Deps.store.add_photo(eid, slot, str(p))
-        for old in olds:  # replace only after the new one is safe; recap docs are just dropped locally
-            Deps.store.delete_photo(old["id"])
-            Path(old["path"]).unlink(missing_ok=True)
-        if f:
-            Deps.store.set_answers(eid, {f.instance_id: "photo"}, set())
-        return back(token)
+            if f:
+                jpegs = jpegs[-1:]
+            olds = Deps.store.photos(eid, slot) if f else []
+            for j in jpegs:
+                p = data_dir() / "recaps" / eid / slot / f"{uuid.uuid4()}.jpg"
+                await anyio.to_thread.run_sync(_write, p, j)
+                Deps.store.add_photo(eid, slot, str(p))
+            for old in olds:  # replace only after the new one is safe; recap docs are just dropped locally
+                Deps.store.delete_photo(old["id"])
+                Path(old["path"]).unlink(missing_ok=True)
+            if f:
+                Deps.store.set_answers(eid, {f.instance_id: "photo"}, set())
+            done += len(jpegs)
+        if errors:
+            msg = (f"Uploaded {done}. " if done else "") + " ".join(errors) + " Please choose those again."
+            return await anyio.to_thread.run_sync(lambda: page(eid, token, msg, status=400))
+        return back(token, done)
 
     async def thumb(request: Request):
         p = photo_of(ctx(request), request)
@@ -147,7 +170,7 @@ def register_upload_routes(server) -> None:
             try:
                 await anyio.to_thread.run_sync(Deps.site.remove_gallery_photos, [p["site_document_id"]])
             except SiteError as e:
-                return await anyio.to_thread.run_sync(page, eid, token, str(e))
+                return await anyio.to_thread.run_sync(lambda: page(eid, token, str(e), status=502))
         Deps.store.delete_photo(p["id"])
         Path(p["path"]).unlink(missing_ok=True)
         f = slot_field(await anyio.to_thread.run_sync(fields_of, eid), p["slot"])
@@ -158,4 +181,4 @@ def register_upload_routes(server) -> None:
     server.custom_route("/upload/{token}", methods=["GET"])(view)
     server.custom_route("/upload/{token}/thumb/{photo_id}", methods=["GET"])(thumb)
     server.custom_route("/upload/{token}/delete/{photo_id}", methods=["POST"])(delete)
-    server.custom_route("/upload/{token}/{slot}", methods=["POST"])(upload)
+    server.custom_route("/upload/{token}", methods=["POST"])(upload)
