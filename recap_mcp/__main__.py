@@ -93,6 +93,8 @@ def main(argv=None):
     s.add_argument("--port", type=int, default=8765)
     s.set_defaults(fn=serve)
     a = p.parse_args(argv)
+    if getattr(a, "public_host", None):  # accept a pasted URL: keep only the domain
+        a.public_host = a.public_host.split("://")[-1].split("/")[0]
     a.fn(a)
 
 
