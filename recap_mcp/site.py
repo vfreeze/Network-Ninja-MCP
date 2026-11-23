@@ -1,4 +1,4 @@
-"""Staff App JSON API client. Recaps are drafts only: the final recap-submit endpoint is deliberately absent."""
+"""Staff App JSON API client. Final recap submit exists only behind submit_recap's user confirmation."""
 import base64
 import json
 import re
@@ -166,6 +166,10 @@ class SiteClient:
 
     def save_draft(self, payload: dict) -> dict:
         return self._send("POST", "partial_recap_response_set", False, json=payload)
+
+    def submit_recap(self, payload: dict) -> dict:
+        """The app's Finish button: same body as a draft (with the draft's ids). Only after the user confirmed."""
+        return self._send("POST", "recap_response_set", False, json=payload)
 
     def submit_primary_claim(self, position_id: str, payload: dict) -> dict:
         """Files the pay claim for a shift. Only called after the user confirmed the preview."""

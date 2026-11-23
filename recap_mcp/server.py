@@ -212,6 +212,15 @@ def read_receipt(events_id: str) -> list[Image | str] | dict:
             "spend and tip fields. Total Spend is calculated by the site."]
 
 
+def _docs(eid: str, fields: list[Field]) -> dict[str, list]:
+    docs: dict[str, list] = {}
+    for p in Deps.store.photos(eid):
+        f = slot_field(fields, p["slot"])
+        if f and p["site_document_id"]:
+            docs.setdefault(f.instance_id, []).append((p["site_document_id"], p["site_document_uuid"]))
+    return docs
+
+
 @_safe
 def save_recap_draft(events_id: str) -> dict:
     ev, defn, fields = _load(events_id)
@@ -242,14 +251,9 @@ def save_recap_draft(events_id: str) -> dict:
             st.mark_uploaded(p["id"], site.upload_gallery_photo(eid, data), None)
         elif (f := slot_field(fields, p["slot"])):
             st.mark_uploaded(p["id"], *site.upload_recap_photo(eid, f.field_id, data))
-    docs: dict[str, list] = {}
-    for p in st.photos(eid):
-        f = slot_field(fields, p["slot"])
-        if f and p["site_document_id"]:
-            docs.setdefault(f.instance_id, []).append((p["site_document_id"], p["site_document_uuid"]))
     answers = st.answers(eid)
     payload = build_draft_payload({**defn, "_app_version": site.app_version()}, fields, eid, site.uid(),
-                                  answers, docs, existing, _now())
+                                  answers, _docs(eid, fields), existing, _now())
     try:
         resp = site.save_draft(payload)
     except SiteError as e:
@@ -265,6 +269,34 @@ def save_recap_draft(events_id: str) -> dict:
     st.upsert_events([{**st.event(eid), "site_status": "draft_saved"}])
     return {"saved": True, "still_missing": _report(eid, fields),
             "message": "Draft saved, not submitted. Open the Staff App to review and submit."}
+
+
+@_safe
+def submit_recap(events_id: str, confirm: bool = False) -> dict:
+    view = get_recap_fields(events_id)
+    if "error" in view:
+        return view
+    if view["answers"] or view["uploads"]:
+        return {"submitted": False, "still_missing": view["summary"], "missing": {**view["answers"], **view["uploads"]},
+                "tell_user": "Can't finish yet: ask for the missing items first."}
+    if not confirm:
+        return {"submitted": False, "preview": {v["label"]: v["value"] for v in view["fields"] if v["status"] == "filled"},
+                "tell_user": "Read back a short summary (numbers, yes/no answers, spend). Submitting is final: it can't "
+                             "be edited here afterwards. Only call again with confirm=true after an explicit yes."}
+    saved = save_recap_draft(events_id)  # uploads photos, pulls in Staff App edits, refuses if locked/submitted
+    left = saved.get("still_missing") or {}
+    if not saved.get("saved") or left.get("answers") or left.get("uploads"):
+        return {**saved, "submitted": False, "message": "Not submitted."}
+    ev, defn, fields = _load(events_id)
+    eid, site = ev["events_id"], Deps.site
+    payload = build_draft_payload({**defn, "_app_version": site.app_version()}, fields, eid, site.uid(),
+                                  Deps.store.answers(eid), _docs(eid, fields), _site_draft(eid), _now())
+    try:
+        site.submit_recap(payload)
+    except SiteError as e:  # a timeout may still have gone through: never blind-retry a final submit
+        return {"submitted": False, "error": f"{e} Check the Staff App before trying again; it may have gone through."}
+    Deps.store.upsert_events([{**Deps.store.event(eid), "site_status": "submitted"}])
+    return {"submitted": True, "message": "Recap submitted (finished). It shows as submitted in the Staff App."}
 
 
 @_safe
@@ -331,8 +363,11 @@ DESCRIPTIONS = {
                        "Then read the still-missing items to the user.",
     create_photo_upload_link: "Get a phone upload link (60 min) for setup, receipt, feature sign and crowd photos.",
     read_receipt: "View the uploaded receipt photo; read subtotal, tip, total and items, then fill the fields.",
-    save_recap_draft: "Save the recap as a DRAFT on the Staff App. This never submits: tell the user to open the "
-                      "Staff App to review and submit. If the user edited the draft there, their changes win.",
+    save_recap_draft: "Save the recap as a DRAFT on the Staff App. This never submits (submit_recap does). "
+                      "If the user edited the draft there, their changes win.",
+    submit_recap: "Finish (final-submit) a recap, like the Finish button in the Staff App. Only when the user asks. "
+                  "Refuses while required items are missing. First call WITHOUT confirm: read the preview summary to "
+                  "the user and only call again with confirm=true after they explicitly say yes. Never confirm on your own.",
     check_claims: "List past shifts and their pay-claim status (needs_claim, Pending, Declined; include_all adds "
                   "Approved and locked). Optionally filter by bar name/date/time.",
     submit_claim: "File the pay (time) claim for a shift. Times default to the scheduled times; pass actual_start/"

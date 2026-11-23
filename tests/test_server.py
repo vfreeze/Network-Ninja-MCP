@@ -97,7 +97,9 @@ def mk(handler):
 
 def test_no_submit_or_claim_endpoints_in_source():
     src = "".join(p.read_text(encoding="utf-8") for p in Path("recap_mcp").glob("*.py"))
-    assert re.search(r"['\"/]recap_response_set['\"]", src) is None
+    # final recap submit lives in exactly one place: SiteClient.submit_recap (behind submit_recap's confirm)
+    assert len(re.findall(r"['\"/]recap_response_set['\"]", src)) == 1
+    assert '"recap_response_set"' in Path("recap_mcp/site.py").read_text(encoding="utf-8")
     # the only claim endpoint is filing your own primary (time) claim; nothing withdraws/deletes/touches others'
     assert set(re.findall(r"/([a-z_]*claims?[a-z_]*)[/\"'?]", src)) <= {"primary_claim"}
     assert not re.search(r"withdraw|secondary_claims|other_users", src)
@@ -268,6 +270,10 @@ class FakeSite:
             raise SiteError("boom")
         return {"id": "p1"}
 
+    def submit_recap(self, payload):
+        self.calls.append(("submit_recap", payload))
+        return {"id": "r1"}
+
 
 def mkt(tmp_path=None, shifts=(("1", "Red Zone", "2026-11-10 18:00:00"),)):
     store, fs = Store(":memory:"), FakeSite()
@@ -347,7 +353,21 @@ def test_save_never_calls_submit():
     srv.fill_recap_fields("1", {ATT: "40"})
     assert srv.save_recap_draft("1")["saved"] is True
     assert {c[0] for c in fs.calls} == {"save_draft"}
-    assert not hasattr(fs, "submit")
+
+
+def test_submit_recap_refuses_missing_previews_then_submits_on_confirm(monkeypatch):
+    store, fs = mkt(); srv.find_recaps()
+    srv.fill_recap_fields("1", {ATT: "40"})
+    r = srv.submit_recap("1", confirm=True)
+    assert r["submitted"] is False and "missing" in r and fs.calls == []
+    monkeypatch.setattr(srv, "missing", lambda fields, answers: {"answers": [], "uploads": []})
+    r = srv.submit_recap("1")
+    assert r["submitted"] is False and "40" in r["preview"].values() and fs.calls == []
+    fs.drs.append(draft_for({ATT: "40"}))  # the draft the site holds after our save
+    r = srv.submit_recap("1", confirm=True)
+    assert r["submitted"] is True and [c[0] for c in fs.calls] == ["save_draft", "submit_recap"]
+    assert fs.calls[1][1]["id"] == "p1"  # final submit reuses the draft's ids, like the app's Finish
+    assert store.event("1")["site_status"] == "submitted"
 
 
 def test_upload_link_and_slots():
