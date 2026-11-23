@@ -2,6 +2,7 @@
 import functools
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
 
@@ -342,7 +343,7 @@ DESCRIPTIONS = {
 
 def build_server(store, site, public_url: str) -> MCPServer:
     Deps.store, Deps.site, Deps.public_url = store, site, public_url
-    server = MCPServer("recap-mcp")
+    server = MCPServer("recap-mcp", instructions=(Path(__file__).parent / "instructions.md").read_text(encoding="utf-8"))
     for fn, desc in DESCRIPTIONS.items():
         server.add_tool(fn, description=desc)
     from .upload import register_upload_routes  # late: upload imports this module
