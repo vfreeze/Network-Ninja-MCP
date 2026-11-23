@@ -21,8 +21,8 @@ It is an [MCP](https://modelcontextprotocol.io) server: a small program that run
 ## How it works
 
 ```
-Claude (phone or web)  ──>  ngrok tunnel  ──>  Recap MCP on your PC  ──>  Staff App
-                            (public URL)       (127.0.0.1:8765)            (your account)
+Claude  ──>  ngrok tunnel  ──>  Recap MCP on your PC  ──>  Staff App
+             (public URL)       (127.0.0.1:8765)         (your account)
 ```
 
 - The server runs on your PC and logs in to the Staff App as you, with a headless browser for the login and the Staff App's own API after that.
@@ -90,7 +90,7 @@ Prefer to run it by hand instead? Use two terminals: `python -m recap_mcp serve 
 
 ### 5. Add it to Claude
 
-claude.ai -> Settings -> Connectors -> Add custom connector, and paste your connector URL. It then shows up in the Claude mobile app too. To stop Claude asking for approval on every step, set the tools to "always allow" in the connector's settings.
+claude.ai -> Settings -> Connectors -> Add custom connector, and paste your connector URL (`https://<domain>/<secret>/mcp`). It then shows up in the Claude mobile app too. To stop Claude asking for approval on every step, set the tools to "always allow" in the connector's settings.
 
 ## Using it
 
